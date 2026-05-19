@@ -194,8 +194,8 @@ class OpenMeteoSource(BaseWeatherSource):
                 'latitude': latitude,
                 'longitude': longitude,
                 'daily': 'temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,weather_code,wind_speed_10m_max,wind_direction_10m_dominant,wind_gusts_10m_max,cloud_cover_mean',
+                'temperature_unit': 'celsius',
                 'timezone': 'auto',
-                'forecast_days': min(days, 90),  # Open-Meteo limit
             }
             response = self.session.get(f"{self.BASE_URL}/forecast", params=params, timeout=self.timeout)
             response.raise_for_status()
@@ -207,11 +207,13 @@ class OpenMeteoSource(BaseWeatherSource):
             daily = data['daily']
             forecasts = []
             for i, timestamp_str in enumerate(daily['time']):
+                temp_max = daily['temperature_2m_max'][i]
+                temp_min = daily['temperature_2m_min'][i]
                 forecast = ForecastPoint(
                     timestamp=datetime.fromisoformat(timestamp_str),
-                    temperature=(daily['temperature_2m_max'][i] + daily['temperature_2m_min'][i]) / 2,
-                    temperature_max=daily.get('temperature_2m_max', [None])[i],
-                    temperature_min=daily.get('temperature_2m_min', [None])[i],
+                    temperature=(temp_max + temp_min) / 2,
+                    temperature_max=temp_max,
+                    temperature_min=temp_min,
                     precipitation=daily.get('precipitation_sum', [0])[i],
                     precipitation_probability=daily.get('precipitation_probability_max', [None])[i],
                     weather_code=daily.get('weather_code', [None])[i],
@@ -229,17 +231,19 @@ class OpenMeteoSource(BaseWeatherSource):
             return []
 
     def get_ensemble_forecast(self, latitude: float, longitude: float, days: int = 7) -> List[EnsembleData]:
-        """Fetch ensemble forecast from Open-Meteo (experimental)"""
+        """Fetch ensemble forecast from Open-Meteo using GFS ensemble"""
         try:
+            import statistics
+
             params = {
                 'latitude': latitude,
                 'longitude': longitude,
                 'hourly': 'temperature_2m,wind_speed_10m,precipitation',
-                'models': 'ensemble',
+                'models': 'gfs_seamless',
                 'timezone': 'auto',
                 'forecast_days': min(days, 10),
             }
-            response = self.session.get(f"{self.BASE_URL}/ensemble-api", params=params, timeout=self.timeout)
+            response = self.session.get(f"{self.BASE_URL}/forecast", params=params, timeout=self.timeout)
             response.raise_for_status()
             data = response.json()
 
@@ -249,33 +253,40 @@ class OpenMeteoSource(BaseWeatherSource):
             hourly = data['hourly']
             ensembles = []
 
-            # Process ensemble data - assumes multiple members
-            temp_data = hourly.get('temperature_2m', [])
-            wind_data = hourly.get('wind_speed_10m', [])
-            precip_data = hourly.get('precipitation', [])
+            # Get time and data arrays
+            times = hourly.get('time', [])
+            temps = hourly.get('temperature_2m', [])
+            winds = hourly.get('wind_speed_10m', [])
+            precips = hourly.get('precipitation', [])
 
-            for i, timestamp_str in enumerate(hourly.get('time', [])):
-                if i % 24 != 0:  # Only daily aggregates
+            # Create daily aggregates from hourly data
+            for day_idx in range(min(len(times) // 24, days)):
+                start_idx = day_idx * 24
+                end_idx = start_idx + 24
+
+                if start_idx >= len(times):
+                    break
+
+                day_temps = [t for t in temps[start_idx:end_idx] if t is not None]
+                day_winds = [w for w in winds[start_idx:end_idx] if w is not None]
+                day_precips = [p for p in precips[start_idx:end_idx] if p is not None]
+
+                if not day_temps:
                     continue
 
-                temps = temp_data[i] if isinstance(temp_data[i], list) else [temp_data[i]]
-                winds = wind_data[i] if isinstance(wind_data[i], list) else [wind_data[i]]
-                precips = precip_data[i] if isinstance(precip_data[i], list) else [precip_data[i]]
-
-                import statistics
                 ensemble = EnsembleData(
-                    timestamp=datetime.fromisoformat(timestamp_str),
-                    ensemble_members=len(temps),
-                    temperature_mean=statistics.mean(temps),
-                    temperature_std=statistics.stdev(temps) if len(temps) > 1 else 0,
-                    temperature_min=min(temps),
-                    temperature_max=max(temps),
-                    wind_speed_mean=statistics.mean(winds),
-                    wind_speed_std=statistics.stdev(winds) if len(winds) > 1 else 0,
-                    precipitation_mean=statistics.mean(precips),
-                    precipitation_std=statistics.stdev(precips) if len(precips) > 1 else 0,
+                    timestamp=datetime.fromisoformat(times[start_idx]),
+                    ensemble_members=len(day_temps),
+                    temperature_mean=statistics.mean(day_temps),
+                    temperature_std=statistics.stdev(day_temps) if len(day_temps) > 1 else 0,
+                    temperature_min=min(day_temps),
+                    temperature_max=max(day_temps),
+                    wind_speed_mean=statistics.mean(day_winds) if day_winds else 0,
+                    wind_speed_std=statistics.stdev(day_winds) if len(day_winds) > 1 else 0,
+                    precipitation_mean=statistics.mean(day_precips) if day_precips else 0,
+                    precipitation_std=statistics.stdev(day_precips) if len(day_precips) > 1 else 0,
                     source=WeatherSource.OPEN_METEO,
-                    raw_data={'index': i},
+                    raw_data={'day_index': day_idx},
                 )
                 ensembles.append(ensemble)
 
@@ -322,10 +333,13 @@ class NOAASource(BaseWeatherSource):
                 return None
 
             period = forecast['properties']['periods'][0]
+            # NOAA returns temperature in Fahrenheit; convert to Celsius
+            temp_f = float(period.get('temperature', 0))
+            temp_c = (temp_f - 32) * 5/9
             return CurrentWeather(
                 timestamp=datetime.fromisoformat(period['startTime']),
-                temperature=float(period.get('temperature', 0)),
-                temperature_2m=float(period.get('temperature', 0)),
+                temperature=temp_c,
+                temperature_2m=temp_c,
                 weather_description=period.get('shortForecast'),
                 wind_speed=self._parse_wind_speed(period.get('windSpeed', '0 mph')),
                 wind_direction=self._wind_to_degrees(period.get('windDirection', 'N')),
@@ -364,9 +378,12 @@ class NOAASource(BaseWeatherSource):
                 if start_time > cutoff_time:
                     break
 
+                # Convert NOAA temperature from Fahrenheit to Celsius
+                temp_f = float(period.get('temperature', 0))
+                temp_c = (temp_f - 32) * 5/9
                 forecast_obj = ForecastPoint(
                     timestamp=start_time,
-                    temperature=float(period.get('temperature', 0)),
+                    temperature=temp_c,
                     weather_description=period.get('shortForecast'),
                     wind_speed=self._parse_wind_speed(period.get('windSpeed', '0 mph')),
                     wind_direction=self._wind_to_degrees(period.get('windDirection', 'N')),
@@ -410,10 +427,13 @@ class NOAASource(BaseWeatherSource):
                     break
 
                 if period['isDaytime']:
+                    # Convert NOAA temperature from Fahrenheit to Celsius
+                    temp_f = float(period.get('temperature', 0))
+                    temp_c = (temp_f - 32) * 5/9
                     forecast_obj = ForecastPoint(
                         timestamp=start_time,
-                        temperature=float(period.get('temperature', 0)),
-                        temperature_max=float(period.get('temperature', 0)),
+                        temperature=temp_c,
+                        temperature_max=temp_c,
                         weather_description=period.get('shortForecast'),
                         wind_speed=self._parse_wind_speed(period.get('windSpeed', '0 mph')),
                         precipitation_probability=float(period.get('probabilityOfPrecipitation', {}).get('value', 0)) if isinstance(period.get('probabilityOfPrecipitation'), dict) else 0,
