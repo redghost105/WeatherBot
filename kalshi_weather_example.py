@@ -45,10 +45,13 @@ def fetch_kalshi_weather(city_key: str, forecast_days: int = 7):
         if weather.current:
             print(f"\n📊 Current Conditions:")
             print(f"   Temperature: {weather.current.temperature:.1f}°C")
-            print(f"   Feels like: {weather.current.feels_like:.1f}°C")
-            print(f"   Humidity: {weather.current.humidity:.0f}%")
+            feels_like = f"{weather.current.feels_like:.1f}°C" if weather.current.feels_like is not None else "N/A"
+            print(f"   Feels like: {feels_like}")
+            humidity = f"{weather.current.humidity:.0f}%" if weather.current.humidity is not None else "N/A"
+            print(f"   Humidity: {humidity}")
             print(f"   Wind: {weather.current.wind_speed:.1f} km/h")
-            print(f"   Pressure: {weather.current.pressure:.1f} hPa")
+            pressure = f"{weather.current.pressure:.1f} hPa" if weather.current.pressure is not None else "N/A"
+            print(f"   Pressure: {pressure}")
 
         # Display forecasts
         print(f"\n📈 Forecasts:")
