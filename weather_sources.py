@@ -114,6 +114,7 @@ class OpenMeteoSource(BaseWeatherSource):
                 'longitude': longitude,
                 'current': 'temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,cloud_cover,pressure_msl,visibility',
                 'timezone': 'auto',
+                'bias_correction': 'true',
             }
             response = self.session.get(f"{self.BASE_URL}/forecast", params=params, timeout=self.timeout)
             response.raise_for_status()
@@ -153,6 +154,7 @@ class OpenMeteoSource(BaseWeatherSource):
                 'hourly': 'temperature_2m,relative_humidity_2m,dew_point_2m,precipitation_probability,precipitation,weather_code,wind_speed_10m,wind_direction_10m,wind_gusts_10m,cloud_cover,visibility,pressure_msl',
                 'timezone': 'auto',
                 'forecast_days': min(days, 16),  # Open-Meteo limit
+                'bias_correction': 'true',
             }
             response = self.session.get(f"{self.BASE_URL}/forecast", params=params, timeout=self.timeout)
             response.raise_for_status()
@@ -196,6 +198,7 @@ class OpenMeteoSource(BaseWeatherSource):
                 'daily': 'temperature_2m_max,temperature_2m_min,precipitation_sum,precipitation_probability_max,weather_code,wind_speed_10m_max,wind_direction_10m_dominant,wind_gusts_10m_max,cloud_cover_mean',
                 'temperature_unit': 'celsius',
                 'timezone': 'auto',
+                'bias_correction': 'true',
             }
             response = self.session.get(f"{self.BASE_URL}/forecast", params=params, timeout=self.timeout)
             response.raise_for_status()
@@ -242,6 +245,7 @@ class OpenMeteoSource(BaseWeatherSource):
                 'models': 'gfs_seamless',
                 'timezone': 'auto',
                 'forecast_days': min(days, 10),
+                'bias_correction': 'true',
             }
             response = self.session.get(f"{self.BASE_URL}/forecast", params=params, timeout=self.timeout)
             response.raise_for_status()
