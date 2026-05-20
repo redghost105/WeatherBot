@@ -1,0 +1,88 @@
+{
+  "KNYC": [
+    {
+      "date": "2026-05-19T13:36:00.366879",
+      "forecast_high": 88,
+      "actual_high": 87,
+      "bias": 1
+    },
+    {
+      "date": "2026-05-19T13:36:00.367017",
+      "forecast_high": 85,
+      "actual_high": 84,
+      "bias": 1
+    },
+    {
+      "date": "2026-05-19T13:36:00.367148",
+      "forecast_high": 90,
+      "actual_high": 89,
+      "bias": 1
+    },
+    {
+      "date": "2026-05-19T22:03:36.354220",
+      "forecast_high": 88,
+      "actual_high": 87,
+      "bias": 1
+    },
+    {
+      "date": "2026-05-19T22:03:36.354388",
+      "forecast_high": 85,
+      "actual_high": 84,
+      "bias": 1
+    },
+    {
+      "date": "2026-05-19T22:03:36.357183",
+      "forecast_high": 90,
+      "actual_high": 89,
+      "bias": 1
+    },
+    {
+      "date": "2026-05-19T22:03:41.859957",
+      "forecast_high": 88,
+      "actual_high": 87,
+      "bias": 1
+    },
+    {
+      "date": "2026-05-19T22:03:41.860147",
+      "forecast_high": 85,
+      "actual_high": 84,
+      "bias": 1
+    },
+    {
+      "date": "2026-05-19T22:03:47.454889",
+      "forecast_high": 30,
+      "actual_high": 28,
+      "bias": 2
+    },
+    {
+      "date": "2026-05-19T22:03:47.455070",
+      "forecast_high": 28,
+      "actual_high": 27,
+      "bias": 1
+    },
+    {
+      "date": "2026-05-19T22:04:06.031677",
+      "forecast_high": 88,
+      "actual_high": 87,
+      "bias": 1
+    },
+    {
+      "date": "2026-05-19T22:04:06.032189",
+      "forecast_high": 85,
+      "actual_high": 84,
+      "bias": 1
+    },
+    {
+      "date": "2026-05-19T22:04:11.776257",
+      "forecast_high": 30,
+      "actual_high": 28,
+      "bias": 2
+    },
+    {
+      "date": "2026-05-19T22:04:11.776448",
+      "forecast_high": 28,
+      "actual_high": 27,
+      "bias": 1
+    }
+  ]
+}

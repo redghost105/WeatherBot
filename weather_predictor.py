@@ -11,9 +11,10 @@ and station-specific historical bias correction.
 
 import json
 import logging
+import re
 import statistics
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
+from dataclasses import dataclass, asdict, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from scipy import stats
@@ -22,6 +23,33 @@ import numpy as np
 from weather_models import LocationWeatherData, ForecastPoint
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# PHASE 4: Configuration & Tunables
+# ============================================================================
+
+@dataclass
+class PredictorConfig:
+    """
+    Central configuration for WeatherPredictor tunables.
+
+    Pass an instance to WeatherPredictor(config=...) to override any default
+    without modifying core code. All parameters are configurable and optional.
+    """
+    ensemble_weight: float = 0.7
+    min_edge_threshold: float = 0.10
+    min_stdev: float = 1.2            # SD floor — prevents overconfidence on flat forecasts
+    max_stdev: float = 3.5            # SD cap — prevents absurd uncertainty estimates
+    confidence_formula_weights: Dict[str, int] = field(default_factory=lambda: {
+        "ensemble": 25,               # Ensemble tightness (0-25 pts)
+        "bias": 25,                   # Bias stability (0-25 pts)
+        "freshness": 25,              # Data freshness (0-25 pts)
+        "volatility": 25,             # Volatility indicators (0-25 pts)
+    })
+    temp_unit: str = 'F'
+    bias_file: str = 'station_bias_history.json'
+    max_history: int = 365
 
 
 # ============================================================================
@@ -229,6 +257,23 @@ class MarketEdgeSummary:
     reasoning: str                          # Human-readable summary
 
 
+@dataclass
+class BacktestResult:
+    """
+    Aggregate calibration metrics from BacktestRunner.run().
+
+    Provides comprehensive assessment of predictor accuracy, confidence calibration,
+    and trading edge capture across a historical data replay.
+    """
+    n_resolved: int                         # Number of observations processed
+    brier_score: float                      # Mean Brier Score across all obs (0-1, lower = better)
+    hit_rate: float                         # Fraction where max-prob bucket = actual (0-1)
+    avg_confidence: float                   # Mean confidence_score across all observations
+    per_observation: List[Dict]             # Raw per-observation records for inspection/audit
+    simulated_roi: Optional[float] = None   # Mean overall_ev if market_prices provided
+    calibration_sharpness: Optional[float] = None  # Variance of probs for resolved buckets
+
+
 # ============================================================================
 # PHASE 2: WeatherPredictor Core Class – Hybrid Logic
 # ============================================================================
@@ -247,7 +292,8 @@ class WeatherPredictor:
     """
 
     def __init__(self, bias_learner: Optional[HistoricalBiasLearner] = None,
-                 ensemble_weight: float = 0.7, temp_unit: str = 'F'):
+                 ensemble_weight: float = 0.7, temp_unit: str = 'F',
+                 config: Optional[PredictorConfig] = None):
         """
         Initialize the WeatherPredictor.
 
@@ -255,13 +301,34 @@ class WeatherPredictor:
             bias_learner: HistoricalBiasLearner instance. Creates one if None.
             ensemble_weight: Weight for ensemble probabilities in blend (0.0-1.0).
                             Defaults to 0.7 (70% ensemble, 30% statistical).
+                            Ignored if config is provided.
             temp_unit: Temperature unit ('F' for Fahrenheit, 'C' for Celsius).
+                      Ignored if config is provided.
+            config: Optional PredictorConfig object. If provided, it takes precedence
+                   over ensemble_weight and temp_unit. If not provided, creates a
+                   config from the individual parameters for backward compatibility.
         """
-        self.bias_learner = bias_learner or HistoricalBiasLearner()
-        self.ensemble_weight = ensemble_weight
-        self.temp_unit = temp_unit
+        # Resolve configuration
+        if config is not None:
+            self.config = config
+        else:
+            # Backward compatibility: create config from individual parameters
+            self.config = PredictorConfig(ensemble_weight=ensemble_weight, temp_unit=temp_unit)
 
-        logger.info(f"WeatherPredictor initialized: ensemble_weight={ensemble_weight}, temp_unit={temp_unit}")
+        # Store convenience attributes for backward compatibility
+        self.ensemble_weight = self.config.ensemble_weight
+        self.temp_unit = self.config.temp_unit
+
+        # Initialize bias learner: explicit arg wins over config
+        if bias_learner is not None:
+            self.bias_learner = bias_learner
+        else:
+            self.bias_learner = HistoricalBiasLearner(
+                bias_file=self.config.bias_file,
+                max_history=self.config.max_history
+            )
+
+        logger.info(f"WeatherPredictor initialized: ensemble_weight={self.ensemble_weight}, temp_unit={self.temp_unit}, config_provided={config is not None}")
 
     def hybrid_bucket_probabilities(self,
                                     weather_data: LocationWeatherData,
@@ -497,34 +564,46 @@ class WeatherPredictor:
         """
         Calculate forecast standard deviation using extracted features.
 
-        Uses hourly statistics when available, with seasonal/weather regime awareness.
+        Uses ensemble spread when available, with fallback to a conservative default.
+        Applied bounds (min_stdev, max_stdev) prevent overconfidence and absurd estimates.
+
+        Philosophy:
+        - Lower bound (min_stdev, default 1.2°): prevents overconfidence on flat, stable
+          forecasts. Even when multiple models agree, some uncertainty always exists.
+        - Upper bound (max_stdev, default 3.5°): prevents absurdly wide distributions
+          that would make every bucket equally likely. This keeps the model responsive
+          to actual forecast divergence without going to extremes.
 
         Args:
             weather_data: LocationWeatherData object
 
         Returns:
-            Estimated standard deviation in degrees
+            Estimated standard deviation in degrees, bounded by config min/max
         """
-        # If ensemble data available, use its spread
+        raw_stdev = None
+
+        # If ensemble data available, use its spread (most reliable signal)
         if weather_data.ensemble_forecast:
             ensemble_stds = [
                 e.temperature_std for e in weather_data.ensemble_forecast
                 if e.temperature_std is not None and e.temperature_std > 0
             ]
             if ensemble_stds:
-                avg_stdev = statistics.mean(ensemble_stds)
-                logger.debug(f"Using ensemble std: {avg_stdev:.2f}°")
-                return avg_stdev
+                raw_stdev = statistics.mean(ensemble_stds)
+                logger.debug(f"Ensemble std (raw): {raw_stdev:.2f}°")
 
-        # Fall back to extracted hourly statistics
-        # Look for temp_stdev_24h in features if available
-        # Default conservative estimate: 2.5–4.0° depending on season
-        default_stdev = 3.0
+        # If no ensemble or it failed, use conservative default
+        if raw_stdev is None:
+            raw_stdev = (self.config.min_stdev + self.config.max_stdev) / 2.0
+            logger.debug(f"Using default stdev: {raw_stdev:.2f}°")
 
-        # Could extract from weather_data.current if it had a features dict
-        # For now, use default
-        logger.debug(f"Using default stdev: {default_stdev:.2f}°")
-        return default_stdev
+        # Apply configured bounds (critical to prevent extreme overconfidence/uncertainty)
+        stdev_used = max(self.config.min_stdev, min(self.config.max_stdev, raw_stdev))
+
+        if stdev_used != raw_stdev:
+            logger.debug(f"Clamped stdev from {raw_stdev:.2f}° to {stdev_used:.2f}° [min={self.config.min_stdev}, max={self.config.max_stdev}]")
+
+        return stdev_used
 
     def _blend_probabilities(self,
                             ensemble_probs: Dict[str, float],
@@ -745,11 +824,14 @@ class WeatherPredictor:
         """
         Compute 4-factor confidence score (0–100) and active risk flags.
 
-        Factors:
-        1. Ensemble Tightness (max 25 pts) - low temperature std = high confidence
-        2. Bias Stability (max 25 pts) - low bias std = high confidence
-        3. Data Freshness (max 25 pts) - recent data = high confidence
-        4. Volatility Indicators (max 25 pts) - low wind/cloud/pressure variability = high confidence
+        Factors weighted by config.confidence_formula_weights (default all 25 pts each):
+        1. Ensemble Tightness - low temperature std = high confidence
+        2. Bias Stability - low bias std = high confidence
+        3. Data Freshness - recent data = high confidence
+        4. Volatility Indicators - low wind/cloud/pressure variability = high confidence
+
+        Each factor contributes up to its configured weight (default 25 pts, total 100 max).
+        All factors are equally weighted by default but can be tuned per-city/season.
 
         Args:
             weather_data: LocationWeatherData object
@@ -760,8 +842,15 @@ class WeatherPredictor:
         """
         risk_flags = []
 
+        # Get configured max points per factor (default 25 each)
+        max_ensemble = self.config.confidence_formula_weights.get("ensemble", 25)
+        max_bias = self.config.confidence_formula_weights.get("bias", 25)
+        max_freshness = self.config.confidence_formula_weights.get("freshness", 25)
+        max_volatility = self.config.confidence_formula_weights.get("volatility", 25)
+
         # Factor 1: Ensemble Tightness (temperature std)
-        f1_points = 10  # Default neutral fallback
+        # Default fallback: 40% of max (neutral when no ensemble data)
+        f1_points = int(max_ensemble * 0.4)
         ensemble_stds = []
         if weather_data.ensemble_forecast:
             for ep in weather_data.ensemble_forecast:
@@ -770,14 +859,15 @@ class WeatherPredictor:
 
         if ensemble_stds:
             avg_temp_std = statistics.mean(ensemble_stds)
+            # Thresholds: 1.0°, 2.0°, 3.0°, 4.5° → award proportional points
             if avg_temp_std <= 1.0:
-                f1_points = 25
+                f1_points = max_ensemble
             elif avg_temp_std <= 2.0:
-                f1_points = 20
+                f1_points = int(max_ensemble * (20/25))
             elif avg_temp_std <= 3.0:
-                f1_points = 13
+                f1_points = int(max_ensemble * (13/25))
             elif avg_temp_std <= 4.5:
-                f1_points = 6
+                f1_points = int(max_ensemble * (6/25))
             else:
                 f1_points = 0
                 risk_flags.append("high_temp_std")
@@ -789,15 +879,15 @@ class WeatherPredictor:
         # Factor 2: Bias Stability
         bias_std = self.bias_learner.get_bias_std(station_id)
         if bias_std <= 0.5:
-            f2_points = 25
+            f2_points = max_bias
         elif bias_std <= 0.75:
-            f2_points = 22
+            f2_points = int(max_bias * (22/25))
         elif bias_std <= 1.0:
-            f2_points = 17
+            f2_points = int(max_bias * (17/25))
         elif bias_std <= 1.5:
-            f2_points = 10
+            f2_points = int(max_bias * (10/25))
         elif bias_std <= 2.5:
-            f2_points = 5
+            f2_points = int(max_bias * (5/25))
         else:
             f2_points = 0
             risk_flags.append("unstable_bias")
@@ -805,13 +895,13 @@ class WeatherPredictor:
         # Factor 3: Data Freshness
         age_minutes = (datetime.utcnow() - weather_data.last_updated).total_seconds() / 60.0
         if age_minutes <= 15:
-            f3_points = 25
+            f3_points = max_freshness
         elif age_minutes <= 30:
-            f3_points = 20
+            f3_points = int(max_freshness * (20/25))
         elif age_minutes <= 60:
-            f3_points = 13
+            f3_points = int(max_freshness * (13/25))
         elif age_minutes <= 120:
-            f3_points = 6
+            f3_points = int(max_freshness * (6/25))
         else:
             f3_points = 0
 
@@ -819,6 +909,7 @@ class WeatherPredictor:
             risk_flags.append("stale_data")
 
         # Factor 4: Volatility Indicators (wind, cloud, pressure)
+        # Three independent penalties that reduce from max_volatility
         wind_penalty = 0
         cloud_penalty = 0
         pressure_penalty = 0
@@ -852,11 +943,11 @@ class WeatherPredictor:
                 if pressure_std > 5:
                     risk_flags.append("high_pressure_variability")
 
-        f4_points = max(0, 25 - wind_penalty - cloud_penalty - pressure_penalty)
+        f4_points = max(0, max_volatility - wind_penalty - cloud_penalty - pressure_penalty)
 
-        # Total confidence
+        # Total confidence (can exceed 100 if weights are customized, but typically 100)
         confidence_score = f1_points + f2_points + f3_points + f4_points
-        logger.debug(f"Confidence factors: F1(ensemble)={f1_points}, F2(bias)={f2_points}, F3(fresh)={f3_points}, F4(vol)={f4_points}")
+        logger.debug(f"Confidence factors: F1={f1_points}/{max_ensemble}, F2={f2_points}/{max_bias}, F3={f3_points}/{max_freshness}, F4={f4_points}/{max_volatility}")
 
         return confidence_score, risk_flags
 
@@ -978,46 +1069,337 @@ class WeatherPredictor:
 
 
 # ============================================================================
+# PHASE 4: Backtesting Framework
+# ============================================================================
+
+class BacktestRunner:
+    """
+    Replay sequences of historical (LocationWeatherData, actual_temperature) pairs
+    through WeatherPredictor and compute calibration metrics.
+
+    Brier Score formula: BS = (1/N) * Σ(p_i - o_i)²
+      p_i = predicted probability for bucket i
+      o_i = 1 if that bucket resolved, 0 otherwise
+      N   = total number of buckets per observation
+
+    Hit Rate: fraction of observations where the max-probability bucket resolved.
+    Calibration Sharpness: variance of predicted probabilities for the correct buckets
+      (higher = more confident in correct predictions).
+    """
+
+    def __init__(
+        self,
+        predictor: 'WeatherPredictor',
+        buckets: List[Bucket],
+        station_id: str,
+        min_edge: float = 0.10,
+    ):
+        """
+        Initialize the BacktestRunner.
+
+        Args:
+            predictor: WeatherPredictor instance (already configured)
+            buckets: List of Bucket objects — the market structure
+            station_id: Station code for bias lookups and edge analysis
+            min_edge: Edge threshold passed to calculate_edge()
+        """
+        self.predictor = predictor
+        self.buckets = buckets
+        self.station_id = station_id
+        self.min_edge = min_edge
+        self._observations: List[Dict] = []
+
+    def add_observation(
+        self,
+        weather_data: LocationWeatherData,
+        actual_temperature: float,
+        market_prices: Optional[Dict[str, float]] = None,
+    ) -> None:
+        """
+        Record one historical data point for replay.
+
+        Args:
+            weather_data: LocationWeatherData as it existed at prediction time
+            actual_temperature: Observed high temperature (ground truth)
+            market_prices: Optional Kalshi prices at prediction time (for EV tracking)
+        """
+        self._observations.append({
+            'weather_data': weather_data,
+            'actual_temperature': actual_temperature,
+            'market_prices': market_prices,
+        })
+
+    def run(self) -> BacktestResult:
+        """
+        Replay all added observations and compute aggregate metrics.
+
+        Returns:
+            BacktestResult with comprehensive calibration and performance metrics
+        """
+        if not self._observations:
+            logger.warning("BacktestRunner.run() called with no observations")
+            return BacktestResult(
+                n_resolved=0,
+                brier_score=0.0,
+                hit_rate=0.0,
+                avg_confidence=0.0,
+                per_observation=[],
+            )
+
+        per_obs_records = []
+        brier_scores = []
+        hits = []
+        confidences = []
+        evs = []
+
+        for obs in self._observations:
+            weather_data = obs['weather_data']
+            actual_temp = obs['actual_temperature']
+            market_prices = obs['market_prices']
+
+            # Get model probabilities
+            model_probs_dict = self.predictor.hybrid_bucket_probabilities(
+                weather_data=weather_data,
+                buckets=self.buckets,
+                station_id=self.station_id,
+            )
+            model_probs = {label: data['probability'] for label, data in model_probs_dict.items()}
+
+            # Compute Brier Score
+            bs = self.brier_score(model_probs, actual_temp, self.buckets)
+            brier_scores.append(bs)
+
+            # Determine hit: find max-prob bucket
+            max_prob_label = max(model_probs.items(), key=lambda x: x[1])[0]
+            max_prob_bucket = next((b for b in self.buckets if b.label == max_prob_label), None)
+            is_hit = max_prob_bucket and max_prob_bucket.contains(actual_temp) if max_prob_bucket else False
+            hits.append(1.0 if is_hit else 0.0)
+
+            # Get confidence score
+            confidence, _ = self.predictor._compute_confidence_score(weather_data, self.station_id)
+            confidences.append(confidence)
+
+            # Optionally compute EV if market prices provided
+            overall_ev = 0.0
+            if market_prices:
+                summary = self.predictor.calculate_edge(
+                    model_probs=model_probs,
+                    market_prices=market_prices,
+                    buckets=self.buckets,
+                    station_id=self.station_id,
+                    weather_data=weather_data,
+                    min_edge=self.min_edge,
+                )
+                overall_ev = summary.overall_ev
+                evs.append(overall_ev)
+
+            # Record per-observation data
+            per_obs_records.append({
+                'actual_temperature': actual_temp,
+                'brier_score': bs,
+                'hit': is_hit,
+                'confidence': confidence,
+                'overall_ev': overall_ev,
+                'max_prob_bucket': max_prob_label,
+            })
+
+        # Compute aggregates
+        mean_brier = statistics.mean(brier_scores) if brier_scores else 0.0
+        mean_hit = statistics.mean(hits) if hits else 0.0
+        mean_confidence = statistics.mean(confidences) if confidences else 0.0
+        mean_ev = statistics.mean(evs) if evs else None
+
+        # Compute calibration sharpness: variance of probs for resolved buckets
+        resolved_probs = []
+        for obs, rec in zip(self._observations, per_obs_records):
+            weather_data = obs['weather_data']
+            actual_temp = obs['actual_temperature']
+            model_probs_dict = self.predictor.hybrid_bucket_probabilities(
+                weather_data=weather_data,
+                buckets=self.buckets,
+                station_id=self.station_id,
+            )
+            model_probs = {label: data['probability'] for label, data in model_probs_dict.items()}
+            # Find bucket containing actual temperature
+            for bucket in self.buckets:
+                if bucket.contains(actual_temp):
+                    resolved_probs.append(model_probs.get(bucket.label, 0.0))
+                    break
+
+        calibration_sharpness = statistics.variance(resolved_probs) if len(resolved_probs) > 1 else None
+
+        return BacktestResult(
+            n_resolved=len(self._observations),
+            brier_score=mean_brier,
+            hit_rate=mean_hit,
+            avg_confidence=mean_confidence,
+            per_observation=per_obs_records,
+            simulated_roi=mean_ev,
+            calibration_sharpness=calibration_sharpness,
+        )
+
+    @staticmethod
+    def brier_score(
+        probs: Dict[str, float],
+        actual_temperature: float,
+        buckets: List[Bucket],
+    ) -> float:
+        """
+        Compute Brier Score for a single observation.
+
+        Brier Score measures the accuracy of predicted probabilities.
+        BS = (1/N) * Σ(p_i - o_i)² where:
+          p_i = predicted probability for bucket i
+          o_i = 1 if bucket i resolved, 0 otherwise
+          N   = total number of buckets
+
+        BS ranges from 0 (perfect) to 1 (worst).
+
+        Args:
+            probs: Dict of bucket label → predicted probability
+            actual_temperature: Observed temperature (ground truth)
+            buckets: List of Bucket objects defining the probability space
+
+        Returns:
+            Brier Score (float, 0-1)
+        """
+        total = 0.0
+        n = len(buckets)
+
+        for bucket in buckets:
+            p_i = probs.get(bucket.label, 0.0)
+            o_i = 1.0 if bucket.contains(actual_temperature) else 0.0
+            total += (p_i - o_i) ** 2
+
+        return total / n if n > 0 else 0.0
+
+
+# ============================================================================
 # Helper Functions
 # ============================================================================
 
 def parse_bucket_string(bucket_str: str, unit: str = 'F') -> Bucket:
     """
-    Parse a bucket label like "92-93" into a Bucket object.
+    Parse a Kalshi market bucket label into a Bucket object.
+
+    Supports all common bucket formats:
+        "92-93"          → low=92, high=93 (plain integer range)
+        "92-93°F"        → low=92, high=93 (with unit suffix)
+        "20-21°C"        → low=20, high=21 (Celsius)
+        ">=95", "≥95"    → low=95, high=float('inf') (open-ended high)
+        "<80", "≤80"     → low=float('-inf'), high=80 (open-ended low)
+        "95+", "70-"     → open-ended ranges
+        "-5-0"           → handles negative temperatures
+
+    Auto-detects unit suffix (°F, °C) and overrides the unit parameter if found.
+    Open-ended buckets use float('inf') and float('-inf') for the unbounded side.
 
     Args:
-        bucket_str: String like "92-93" or "28-29"
-        unit: Temperature unit ('F' or 'C')
+        bucket_str: Bucket label string (e.g., "92-93", "20-21°C", ">=95")
+        unit: Temperature unit ('F' or 'C') — overridden if unit suffix detected
 
     Returns:
-        Bucket object
+        Bucket object with properly set low, high, and canonical label
+
+    Raises:
+        ValueError: If the string format is not recognized or low >= high
     """
-    parts = bucket_str.split('-')
-    if len(parts) != 2:
-        raise ValueError(f"Invalid bucket string: {bucket_str}")
+    working_str = bucket_str.strip()
+    detected_unit = unit
 
-    low = float(parts[0])
-    high = float(parts[1])
+    # Step 1: Detect and strip unit suffix (°F, °C, etc.)
+    unit_match = re.search(r'°([FC])|([FC])$', working_str)
+    if unit_match:
+        detected_unit = unit_match.group(1) or unit_match.group(2)
+        working_str = re.sub(r'°?[FC]$', '', working_str).strip()
 
-    return Bucket(low=low, high=high, label=bucket_str)
+    # Step 2: Check for open-ended patterns (before range split)
+    # >= or ≥ patterns
+    open_high_match = re.match(r'^(>=|≥|=>)\s*(-?\d+\.?\d*)$', working_str)
+    if open_high_match:
+        value = float(open_high_match.group(2))
+        label = f"≥{int(value) if value == int(value) else value}"
+        return Bucket(low=value, high=float('inf'), label=label)
+
+    # Trailing + pattern (e.g., "95+")
+    plus_match = re.match(r'^(-?\d+\.?\d*)\+$', working_str)
+    if plus_match:
+        value = float(plus_match.group(1))
+        label = f"≥{int(value) if value == int(value) else value}"
+        return Bucket(low=value, high=float('inf'), label=label)
+
+    # <= or ≤ patterns
+    open_low_match = re.match(r'^(<=|≤|=<|<)\s*(-?\d+\.?\d*)$', working_str)
+    if open_low_match:
+        value = float(open_low_match.group(2))
+        label = f"<{int(value) if value == int(value) else value}"
+        return Bucket(low=float('-inf'), high=value, label=label)
+
+    # Trailing - pattern (e.g., "70-")
+    minus_match = re.match(r'^(-?\d+\.?\d*)-$', working_str)
+    if minus_match:
+        value = float(minus_match.group(1))
+        label = f"<{int(value) if value == int(value) else value}"
+        return Bucket(low=float('-inf'), high=value, label=label)
+
+    # Step 3: Range pattern with regex to handle negatives safely
+    range_match = re.match(r'^(-?\d+\.?\d*)-(-?\d+\.?\d*)$', working_str)
+    if range_match:
+        low_str = range_match.group(1)
+        high_str = range_match.group(2)
+        low = float(low_str)
+        high = float(high_str)
+
+        if low >= high:
+            raise ValueError(f"Invalid bucket range: low ({low}) must be < high ({high})")
+
+        # Canonical label: use integers if possible
+        low_label = int(low) if low == int(low) else low
+        high_label = int(high) if high == int(high) else high
+        label = f"{low_label}-{high_label}"
+
+        return Bucket(low=low, high=high, label=label)
+
+    # If we reach here, the format was not recognized
+    raise ValueError(
+        f"Invalid bucket string format: '{bucket_str}'. "
+        "Expected formats: '92-93', '20-21°C', '>=95', '<80', '95+', '70-'"
+    )
 
 
-def create_buckets_from_range(low: float, high: float, unit: str = 'F') -> List[Bucket]:
+def create_buckets_from_range(low: float, high: float, unit: str = 'F', step: float = 1.0) -> List[Bucket]:
     """
-    Create a list of consecutive 1-degree buckets covering a range.
+    Create a list of consecutive temperature buckets covering a range.
+
+    Generates buckets from low to high with the specified step size.
+    Default step=1.0 creates 1-degree buckets (the most common case).
 
     Args:
         low: Lower bound (inclusive)
         high: Upper bound (exclusive)
-        unit: Temperature unit
+        unit: Temperature unit ('F' or 'C')
+        step: Bucket size (default 1.0 for 1-degree buckets)
 
     Returns:
-        List of Bucket objects
+        List of Bucket objects ordered from low to high
+
+    Examples:
+        create_buckets_from_range(88, 95, unit='F')     # [88-89, 89-90, ..., 94-95]
+        create_buckets_from_range(20, 28, unit='C', step=0.5)  # [20-20.5, 20.5-21, ...]
     """
     buckets = []
-    current = int(low)
+    current = low
+
     while current < high:
-        bucket = Bucket(low=current, high=current + 1, label=f"{current}-{current + 1}")
+        next_val = current + step
+        # Format label: use integers if both bounds are integers, else use 1 decimal
+        if current == int(current) and next_val == int(next_val):
+            label = f"{int(current)}-{int(next_val)}"
+        else:
+            label = f"{current:.1f}-{next_val:.1f}"
+
+        bucket = Bucket(low=current, high=next_val, label=label)
         buckets.append(bucket)
-        current += 1
+        current = next_val
+
     return buckets
