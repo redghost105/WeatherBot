@@ -191,6 +191,45 @@ class HistoricalBiasLearner:
 
 
 # ============================================================================
+# PHASE 3: Edge Detection & Trading Intelligence
+# ============================================================================
+
+@dataclass
+class BucketEdge:
+    """
+    Analysis of one bucket's trading edge: model probability vs market probability.
+
+    Used by calculate_edge() to report per-bucket opportunity details and recommendations.
+    """
+    label: str                              # e.g., "92-93"
+    model_prob: float                       # Model's probability (0–1)
+    market_prob: float                      # Market-implied probability (0–1)
+    edge: float                             # model_prob - market_prob (signed, can be negative)
+    recommendation: str                     # "BUY", "STRONG_BUY", "SELL_NO", or "SKIP"
+    conviction: float                       # 0–1, after risk adjustments and adjacency bonuses
+    is_adjacent_group_member: bool          # True if part of 2+ bucket positive-edge run
+    group_id: Optional[int]                 # Index of adjacent group; None if isolated
+
+
+@dataclass
+class MarketEdgeSummary:
+    """
+    Complete market-level trading opportunity analysis.
+
+    Returned by calculate_edge() with comprehensive per-bucket analysis,
+    confidence scoring, risk flags, and recommendations.
+    """
+    station_id: str                         # Station identifier (e.g., "KNYC")
+    confidence_score: float                 # 0–100 composite confidence
+    overall_ev: float                       # Expected value sum (edge × conviction) for BUY/STRONG_BUY
+    bucket_edges: List[BucketEdge]          # All buckets (including SKIPs)
+    top_buckets: List[str]                  # Up to 3 highest-conviction positive-edge bucket labels
+    recommended_exposure: str               # "NONE", "LOW", "MEDIUM", or "HIGH"
+    risk_flags: List[str]                   # Active risk modifier flags
+    reasoning: str                          # Human-readable summary
+
+
+# ============================================================================
 # PHASE 2: WeatherPredictor Core Class – Hybrid Logic
 # ============================================================================
 
@@ -540,6 +579,402 @@ class WeatherPredictor:
 
         logger.debug(f"Blended: {ensemble_weight:.1%} ensemble + {statistical_weight:.1%} statistical")
         return blended, "blended", overall_confidence
+
+    # ========================================================================
+    # PHASE 3: Edge Detection & Trading Intelligence
+    # ========================================================================
+
+    def calculate_edge(self,
+                      model_probs: Dict[str, float],
+                      market_prices: Dict[str, float],
+                      buckets: List[Bucket],
+                      station_id: str,
+                      weather_data: LocationWeatherData,
+                      min_edge: float = 0.10) -> MarketEdgeSummary:
+        """
+        Compare model probabilities to market-implied probabilities and surface +EV opportunities.
+
+        Performs comprehensive edge analysis: computes 4-factor confidence score, applies risk
+        modifiers, detects adjacent bucket grouping, adjusts conviction, and generates trading
+        recommendations (BUY, STRONG_BUY, SELL_NO, SKIP).
+
+        Args:
+            model_probs: Dict mapping bucket label → model probability (from hybrid_bucket_probabilities)
+            market_prices: Dict mapping bucket label → market-implied probability (0–1)
+            buckets: List of Bucket objects (must be ordered low→high for adjacency detection)
+            station_id: Station identifier (e.g., "KNYC")
+            weather_data: LocationWeatherData object (for confidence & risk calculations)
+            min_edge: Minimum raw edge threshold for BUY recommendation (default 0.10)
+
+        Returns:
+            MarketEdgeSummary with per-bucket edges, recommendations, confidence score, and risk flags
+        """
+        logger.info(f"Calculating edge for {station_id}: {len(model_probs)} model buckets")
+
+        # Guard: check for common labels
+        common_labels = set(model_probs.keys()) & set(market_prices.keys())
+        if not common_labels:
+            logger.warning(f"No common bucket labels between model and market for {station_id}")
+            return MarketEdgeSummary(
+                station_id=station_id,
+                confidence_score=0.0,
+                overall_ev=0.0,
+                bucket_edges=[],
+                top_buckets=[],
+                recommended_exposure="NONE",
+                risk_flags=["no_common_buckets"],
+                reasoning="No common bucket labels between model and market."
+            )
+
+        # Compute 4-factor confidence score
+        confidence_score, global_risk_flags = self._compute_confidence_score(weather_data, station_id)
+        logger.debug(f"Confidence score: {confidence_score:.1f}/100, risk flags: {global_risk_flags}")
+
+        # Safety gate: confidence < 25 → force all recommendations to SKIP
+        safety_override = confidence_score < 25
+
+        # Build initial bucket edges
+        bucket_edges = []
+        for label in common_labels:
+            model_prob = model_probs[label]
+            market_prob = market_prices[label]
+            edge = model_prob - market_prob
+
+            # Base conviction from confidence score
+            base_conviction = confidence_score / 100.0
+
+            # Apply risk modifiers
+            conviction, per_bucket_flags = self._apply_risk_modifiers(base_conviction, weather_data)
+
+            # Initial recommendation (before adjacency adjustments)
+            if safety_override:
+                recommendation = "SKIP"
+            elif edge >= min_edge * 2 and conviction >= 0.80:
+                recommendation = "STRONG_BUY"
+            elif edge >= min_edge:
+                recommendation = "BUY"
+            elif edge <= -min_edge:
+                recommendation = "SELL_NO"
+            else:
+                recommendation = "SKIP"
+
+            bucket_edges.append(BucketEdge(
+                label=label,
+                model_prob=model_prob,
+                market_prob=market_prob,
+                edge=edge,
+                recommendation=recommendation,
+                conviction=conviction,
+                is_adjacent_group_member=False,
+                group_id=None
+            ))
+
+        # Detect adjacent groups (2+ consecutive positive-edge buckets)
+        bucket_edges = self._detect_adjacent_groups(bucket_edges, buckets)
+
+        # Apply spread bonus to adjacent group members
+        for be in bucket_edges:
+            if be.is_adjacent_group_member and be.recommendation in ["BUY", "STRONG_BUY"]:
+                be.conviction = min(1.0, be.conviction * 1.15)
+                logger.debug(f"Spread bonus applied to {be.label}: conviction → {be.conviction:.3f}")
+
+        # Apply isolation penalty to isolated buckets
+        for be in bucket_edges:
+            if not be.is_adjacent_group_member and be.recommendation in ["BUY", "STRONG_BUY"] and be.conviction < 0.80:
+                old_conviction = be.conviction
+                be.conviction *= 0.80
+                logger.debug(f"Isolation penalty applied to {be.label}: conviction {old_conviction:.3f} → {be.conviction:.3f}")
+
+        # Re-evaluate recommendations after conviction adjustments
+        for be in bucket_edges:
+            if safety_override:
+                be.recommendation = "SKIP"
+            elif be.edge >= min_edge * 2 and be.conviction >= 0.80:
+                be.recommendation = "STRONG_BUY"
+            elif be.edge >= min_edge:
+                be.recommendation = "BUY"
+            elif be.edge <= -min_edge:
+                be.recommendation = "SELL_NO"
+            else:
+                be.recommendation = "SKIP"
+
+        # Compute market-level outputs
+        buy_buckets = [be for be in bucket_edges if be.recommendation in ["BUY", "STRONG_BUY"]]
+        overall_ev = sum(be.edge * be.conviction for be in buy_buckets)
+
+        # Top buckets (up to 3, sorted by conviction descending)
+        top_buckets = sorted(
+            [be for be in bucket_edges if be.recommendation in ["BUY", "STRONG_BUY"]],
+            key=lambda x: x.conviction,
+            reverse=True
+        )[:3]
+        top_bucket_labels = [be.label for be in top_buckets]
+
+        # Recommended exposure
+        if not buy_buckets or confidence_score < 40:
+            recommended_exposure = "NONE"
+        elif confidence_score < 55:
+            recommended_exposure = "LOW"
+        elif confidence_score < 70:
+            recommended_exposure = "MEDIUM"
+        else:
+            recommended_exposure = "HIGH"
+
+        # Reasoning summary
+        reasoning = f"{len(buy_buckets)} BUY opportunities, overall EV: {overall_ev:.3f}, confidence: {confidence_score:.1f}/100"
+        if global_risk_flags:
+            reasoning += f", risk flags: {', '.join(global_risk_flags)}"
+
+        summary = MarketEdgeSummary(
+            station_id=station_id,
+            confidence_score=confidence_score,
+            overall_ev=overall_ev,
+            bucket_edges=bucket_edges,
+            top_buckets=top_bucket_labels,
+            recommended_exposure=recommended_exposure,
+            risk_flags=global_risk_flags,
+            reasoning=reasoning
+        )
+
+        logger.info(f"Edge summary for {station_id}: {recommended_exposure} exposure, EV={overall_ev:.3f}")
+        return summary
+
+    def _compute_confidence_score(self,
+                                  weather_data: LocationWeatherData,
+                                  station_id: str) -> Tuple[float, List[str]]:
+        """
+        Compute 4-factor confidence score (0–100) and active risk flags.
+
+        Factors:
+        1. Ensemble Tightness (max 25 pts) - low temperature std = high confidence
+        2. Bias Stability (max 25 pts) - low bias std = high confidence
+        3. Data Freshness (max 25 pts) - recent data = high confidence
+        4. Volatility Indicators (max 25 pts) - low wind/cloud/pressure variability = high confidence
+
+        Args:
+            weather_data: LocationWeatherData object
+            station_id: Station identifier
+
+        Returns:
+            Tuple of (confidence_score 0-100, list of active risk flags)
+        """
+        risk_flags = []
+
+        # Factor 1: Ensemble Tightness (temperature std)
+        f1_points = 10  # Default neutral fallback
+        ensemble_stds = []
+        if weather_data.ensemble_forecast:
+            for ep in weather_data.ensemble_forecast:
+                if ep.temperature_std is not None:
+                    ensemble_stds.append(ep.temperature_std)
+
+        if ensemble_stds:
+            avg_temp_std = statistics.mean(ensemble_stds)
+            if avg_temp_std <= 1.0:
+                f1_points = 25
+            elif avg_temp_std <= 2.0:
+                f1_points = 20
+            elif avg_temp_std <= 3.0:
+                f1_points = 13
+            elif avg_temp_std <= 4.5:
+                f1_points = 6
+            else:
+                f1_points = 0
+                risk_flags.append("high_temp_std")
+
+        if ensemble_stds and statistics.mean(ensemble_stds) > 3.5:
+            if "high_temp_std" not in risk_flags:
+                risk_flags.append("high_temp_std")
+
+        # Factor 2: Bias Stability
+        bias_std = self.bias_learner.get_bias_std(station_id)
+        if bias_std <= 0.5:
+            f2_points = 25
+        elif bias_std <= 0.75:
+            f2_points = 22
+        elif bias_std <= 1.0:
+            f2_points = 17
+        elif bias_std <= 1.5:
+            f2_points = 10
+        elif bias_std <= 2.5:
+            f2_points = 5
+        else:
+            f2_points = 0
+            risk_flags.append("unstable_bias")
+
+        # Factor 3: Data Freshness
+        age_minutes = (datetime.utcnow() - weather_data.last_updated).total_seconds() / 60.0
+        if age_minutes <= 15:
+            f3_points = 25
+        elif age_minutes <= 30:
+            f3_points = 20
+        elif age_minutes <= 60:
+            f3_points = 13
+        elif age_minutes <= 120:
+            f3_points = 6
+        else:
+            f3_points = 0
+
+        if age_minutes > 90:
+            risk_flags.append("stale_data")
+
+        # Factor 4: Volatility Indicators (wind, cloud, pressure)
+        wind_penalty = 0
+        cloud_penalty = 0
+        pressure_penalty = 0
+
+        if weather_data.ensemble_forecast:
+            wind_stds = []
+            for ep in weather_data.ensemble_forecast:
+                if ep.wind_speed_std is not None:
+                    wind_stds.append(ep.wind_speed_std)
+            if wind_stds:
+                avg_wind_std = statistics.mean(wind_stds)
+                if avg_wind_std > 5:
+                    wind_penalty = min(10, (avg_wind_std - 5) * 2)
+                if avg_wind_std > 10:
+                    risk_flags.append("high_wind_volatility")
+
+        if weather_data.hourly_forecast:
+            cloud_covers = [p.cloud_cover for p in weather_data.hourly_forecast[:24] if p.cloud_cover is not None]
+            if cloud_covers and len(cloud_covers) >= 2:
+                cloud_std = statistics.stdev(cloud_covers) if len(cloud_covers) > 1 else 0
+                if cloud_std > 15:
+                    cloud_penalty = min(10, (cloud_std - 15) * 0.5)
+                if cloud_std > 30:
+                    risk_flags.append("high_cloud_variability")
+
+            pressures = [p.pressure for p in weather_data.hourly_forecast[:24] if p.pressure is not None]
+            if pressures and len(pressures) >= 2:
+                pressure_std = statistics.stdev(pressures) if len(pressures) > 1 else 0
+                if pressure_std > 2:
+                    pressure_penalty = min(5, (pressure_std - 2) * 1.5)
+                if pressure_std > 5:
+                    risk_flags.append("high_pressure_variability")
+
+        f4_points = max(0, 25 - wind_penalty - cloud_penalty - pressure_penalty)
+
+        # Total confidence
+        confidence_score = f1_points + f2_points + f3_points + f4_points
+        logger.debug(f"Confidence factors: F1(ensemble)={f1_points}, F2(bias)={f2_points}, F3(fresh)={f3_points}, F4(vol)={f4_points}")
+
+        return confidence_score, risk_flags
+
+    def _apply_risk_modifiers(self,
+                             base_conviction: float,
+                             weather_data: LocationWeatherData) -> Tuple[float, List[str]]:
+        """
+        Apply compounding risk multipliers to reduce conviction under volatile conditions.
+
+        Multipliers stack:
+        - High temp_std: ×0.60 (very_high) or ×0.80 (high)
+        - High wind_std: ×0.70 (very_high) or ×0.88 (elevated)
+        - High cloud_std: ×0.75 (very_high) or ×0.90 (elevated)
+
+        Args:
+            base_conviction: Starting conviction (0–1)
+            weather_data: LocationWeatherData object
+
+        Returns:
+            Tuple of (adjusted_conviction, list of fired_flags)
+        """
+        conviction = base_conviction
+        fired_flags = []
+
+        # Temperature std penalties
+        avg_temp_std = 0
+        if weather_data.ensemble_forecast:
+            stds = [ep.temperature_std for ep in weather_data.ensemble_forecast if ep.temperature_std is not None]
+            if stds:
+                avg_temp_std = statistics.mean(stds)
+
+        if avg_temp_std > 4.5:
+            conviction *= 0.60
+            fired_flags.append("very_high_temp_std")
+        elif avg_temp_std > 3.0:
+            conviction *= 0.80
+            fired_flags.append("high_temp_std")
+
+        # Wind std penalties
+        avg_wind_std = 0
+        if weather_data.ensemble_forecast:
+            wstds = [ep.wind_speed_std for ep in weather_data.ensemble_forecast if ep.wind_speed_std is not None]
+            if wstds:
+                avg_wind_std = statistics.mean(wstds)
+
+        if avg_wind_std > 15:
+            conviction *= 0.70
+            fired_flags.append("very_high_wind_std")
+        elif avg_wind_std > 8:
+            conviction *= 0.88
+            fired_flags.append("elevated_wind_std")
+
+        # Cloud variability penalties
+        cloud_std = 0
+        if weather_data.hourly_forecast:
+            clouds = [p.cloud_cover for p in weather_data.hourly_forecast[:24] if p.cloud_cover is not None]
+            if clouds and len(clouds) > 1:
+                cloud_std = statistics.stdev(clouds)
+
+        if cloud_std > 35:
+            conviction *= 0.75
+            fired_flags.append("very_high_cloud_variability")
+        elif cloud_std > 22:
+            conviction *= 0.90
+            fired_flags.append("elevated_cloud_variability")
+
+        conviction = max(0.0, min(1.0, conviction))
+        return conviction, fired_flags
+
+    def _detect_adjacent_groups(self,
+                               bucket_edges: List[BucketEdge],
+                               buckets: List[Bucket]) -> List[BucketEdge]:
+        """
+        Identify runs of 2+ consecutive buckets with positive edge.
+
+        Marks adjacent group members with is_adjacent_group_member=True and assigns group_id.
+        Encourages spreading strategies by clustering related opportunities.
+
+        Args:
+            bucket_edges: List of BucketEdge objects (unsorted initially)
+            buckets: List of Bucket objects (must be ordered low→high)
+
+        Returns:
+            Updated bucket_edges with adjacency information populated
+        """
+        # Build edge map
+        edge_map = {be.label: be for be in bucket_edges}
+
+        # Build positive edge set
+        positive_set = {be.label for be in bucket_edges if be.edge > 0}
+
+        logger.debug(f"Detecting adjacent groups: {len(positive_set)} buckets with positive edge")
+
+        # Walk buckets in order, identifying runs
+        current_run = []
+        group_id = 0
+
+        for bucket in buckets:
+            if bucket.label in edge_map:
+                if bucket.label in positive_set:
+                    # Extend current run
+                    current_run.append(bucket.label)
+                else:
+                    # End of run
+                    if len(current_run) >= 2:
+                        for label in current_run:
+                            edge_map[label].is_adjacent_group_member = True
+                            edge_map[label].group_id = group_id
+                        group_id += 1
+                    current_run = []
+
+        # Flush remaining run
+        if len(current_run) >= 2:
+            for label in current_run:
+                edge_map[label].is_adjacent_group_member = True
+                edge_map[label].group_id = group_id
+
+        return list(edge_map.values())
 
 
 # ============================================================================
