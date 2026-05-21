@@ -144,11 +144,24 @@ class ExecutionService:
 
     def _log_event(self, event_type: str, data: Dict):
         """Log an event to the trade journal."""
+        # Convert datetime objects to isoformat strings for JSON serialization
+        def convert_datetimes(obj):
+            if isinstance(obj, dict):
+                return {k: convert_datetimes(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_datetimes(v) for v in obj]
+            elif isinstance(obj, datetime):
+                return obj.isoformat()
+            else:
+                return obj
+
+        converted_data = convert_datetimes(data)
+
         entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "event_type": event_type,
             "mode": self.config.mode.value,
-            **data
+            **converted_data
         }
 
         # Append to JSONL journal
