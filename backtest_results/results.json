@@ -1,0 +1,32 @@
+{
+  "config": {
+    "start_date": "2026-05-01",
+    "end_date": "2026-05-21",
+    "initial_capital_cents": 1000000,
+    "min_edge_threshold": 0.01,
+    "ensemble_weight": 0.7,
+    "confidence_cutoff": 50.0,
+    "max_position_size": 100,
+    "max_daily_loss_pct": -0.08,
+    "max_per_city_exposure": 500,
+    "mode": "BacktestMode.LIVE_REPLAY",
+    "include_fees": true,
+    "fee_per_contract_cents": 1,
+    "slippage_pct": 0.02,
+    "weather_archive": "open-meteo",
+    "market_data_source": "cached",
+    "output_dir": "backtest_results",
+    "generate_plots": true,
+    "export_csv": true
+  },
+  "summary": {
+    "start_date": "2026-05-01",
+    "end_date": "2026-05-21",
+    "num_days": 21,
+    "starting_capital": 1000000,
+    "ending_capital": 587059.75,
+    "total_return_pct": -41.294025
+  },
+  "trades": 63,
+  "metrics": {}
+}

@@ -337,6 +337,12 @@
       "forecast_high": 65.0,
       "actual_high": 78.0,
       "bias": -13.0
+    },
+    {
+      "date": "2026-05-21T06:56:59.049810+00:00",
+      "forecast_high": 65.0,
+      "actual_high": 78.0,
+      "bias": -13.0
     }
   ]
 }
