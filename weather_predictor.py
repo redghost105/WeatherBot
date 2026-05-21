@@ -128,7 +128,7 @@ class HistoricalBiasLearner:
         if station_id not in self.station_biases:
             self.station_biases[station_id] = []
 
-        date = date or datetime.now().isoformat()
+        date = date or datetime.now(timezone.utc).isoformat()
         bias = forecast_high - actual_high  # Positive = forecast too warm
 
         record = {
@@ -167,11 +167,15 @@ class HistoricalBiasLearner:
             logger.debug(f"No bias history for {station_id}, returning 0.0")
             return 0.0
 
-        cutoff_date = datetime.now() - timedelta(days=lookback_days)
-        recent_records = [
-            r for r in self.station_biases[station_id]
-            if datetime.fromisoformat(r['date']) >= cutoff_date
-        ]
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        recent_records = []
+        for r in self.station_biases[station_id]:
+            parsed_date = datetime.fromisoformat(r['date'])
+            # Normalize naive datetimes to UTC
+            if parsed_date.tzinfo is None:
+                parsed_date = parsed_date.replace(tzinfo=timezone.utc)
+            if parsed_date >= cutoff_date:
+                recent_records.append(r)
 
         if not recent_records:
             logger.debug(f"No recent bias history for {station_id} ({lookback_days}d), returning 0.0")
@@ -197,11 +201,15 @@ class HistoricalBiasLearner:
         if station_id not in self.station_biases or not self.station_biases[station_id]:
             return 0.5
 
-        cutoff_date = datetime.now() - timedelta(days=lookback_days)
-        recent_records = [
-            r for r in self.station_biases[station_id]
-            if datetime.fromisoformat(r['date']) >= cutoff_date
-        ]
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+        recent_records = []
+        for r in self.station_biases[station_id]:
+            parsed_date = datetime.fromisoformat(r['date'])
+            # Normalize naive datetimes to UTC
+            if parsed_date.tzinfo is None:
+                parsed_date = parsed_date.replace(tzinfo=timezone.utc)
+            if parsed_date >= cutoff_date:
+                recent_records.append(r)
 
         if len(recent_records) < 2:
             return 0.5
@@ -893,7 +901,7 @@ class WeatherPredictor:
             risk_flags.append("unstable_bias")
 
         # Factor 3: Data Freshness
-        age_minutes = (datetime.utcnow() - weather_data.last_updated).total_seconds() / 60.0
+        age_minutes = (datetime.now(timezone.utc) - weather_data.last_updated).total_seconds() / 60.0
         if age_minutes <= 15:
             f3_points = max_freshness
         elif age_minutes <= 30:

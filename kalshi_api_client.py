@@ -1,0 +1,326 @@
+"""
+Kalshi API Client for fetching real market prices and orderbook data.
+
+Handles RSA-based authentication and provides methods to fetch:
+- Market listings
+- Orderbook prices for specific markets
+- Temperature contract mappings
+"""
+
+import json
+import logging
+import requests
+from typing import Dict, Optional, List
+from datetime import datetime
+from pathlib import Path
+import base64
+import hashlib
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+from cryptography.hazmat.backends import default_backend
+
+logger = logging.getLogger(__name__)
+
+
+class KalshiAPIClient:
+    """
+    Client for Kalshi Trade API v2.
+
+    Handles authentication via RSA-signed requests and provides
+    methods to fetch market data, orderbooks, and portfolio info.
+    """
+
+    BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
+
+    def __init__(self, api_key_id: str, private_key_pem: str):
+        """
+        Initialize Kalshi API client.
+
+        Args:
+            api_key_id: API key identifier (UUID)
+            private_key_pem: RSA private key in PEM format
+        """
+        self.api_key_id = api_key_id
+        self.private_key_pem = private_key_pem
+
+        # Load private key
+        try:
+            self.private_key = serialization.load_pem_private_key(
+                private_key_pem.encode(),
+                password=None,
+                backend=default_backend()
+            )
+            logger.info(f"✓ Loaded RSA private key for {api_key_id}")
+        except Exception as e:
+            logger.error(f"Failed to load private key: {e}")
+            raise
+
+    def _sign_request(self, method: str, path: str, body: str = "") -> str:
+        """
+        Sign a request using RSA-SHA256.
+
+        Args:
+            method: HTTP method (GET, POST, etc.)
+            path: API path (e.g., "/trade-api/v2/markets")
+            body: Request body (empty string for GET)
+
+        Returns:
+            Base64-encoded signature
+        """
+        # Create signature string: METHOD\nPATH\nBODY
+        signature_string = f"{method}\n{path}\n{body}"
+
+        # Sign with RSA-SHA256
+        signature = self.private_key.sign(
+            signature_string.encode(),
+            padding.PKCS1v15(),
+            hashes.SHA256()
+        )
+
+        # Return base64-encoded signature
+        return base64.b64encode(signature).decode()
+
+    def _request(self, method: str, endpoint: str, data: Optional[Dict] = None) -> Dict:
+        """
+        Make an authenticated request to Kalshi API.
+
+        Args:
+            method: HTTP method
+            endpoint: API endpoint (e.g., "/markets")
+            data: Request body (for POST/PATCH)
+
+        Returns:
+            Response JSON
+        """
+        url = f"{self.BASE_URL}{endpoint}"
+        body = json.dumps(data) if data else ""
+
+        # Create signature
+        signature = self._sign_request(method, f"/trade-api/v2{endpoint}", body)
+
+        # Build headers
+        headers = {
+            "Content-Type": "application/json",
+            "KALSHI-SIGNATURE": signature,
+            "KALSHI-USER-ID": self.api_key_id,
+        }
+
+        try:
+            if method == "GET":
+                response = requests.get(url, headers=headers, timeout=10)
+            elif method == "POST":
+                response = requests.post(url, headers=headers, json=data, timeout=10)
+            elif method == "PATCH":
+                response = requests.patch(url, headers=headers, json=data, timeout=10)
+            elif method == "DELETE":
+                response = requests.delete(url, headers=headers, timeout=10)
+            else:
+                raise ValueError(f"Unsupported method: {method}")
+
+            response.raise_for_status()
+            return response.json()
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API request failed: {e}")
+            return {}
+
+    def get_markets(self, status: Optional[str] = "open", series_ticker: Optional[str] = None) -> List[Dict]:
+        """
+        Fetch markets list filtered by status and/or series ticker.
+
+        Args:
+            status: Market status filter (unopened, open, closed, settled)
+            series_ticker: Series ticker for filtering (e.g., "KXHIGHNY" for NYC temperature)
+
+        Returns:
+            List of market objects
+        """
+        params_list = []
+        if status:
+            params_list.append(f"status={status}")
+        if series_ticker:
+            params_list.append(f"series_ticker={series_ticker}")
+
+        params = "?" + "&".join(params_list) if params_list else ""
+        response = self._request("GET", f"/markets{params}")
+        return response.get("markets", [])
+
+    def get_series(self, series_ticker: str) -> Dict:
+        """
+        Fetch series information by series ticker.
+
+        Args:
+            series_ticker: Series ticker (e.g., "KXHIGHNY" for NYC high temperature)
+
+        Returns:
+            Series object with metadata
+        """
+        response = self._request("GET", f"/series/{series_ticker}")
+        return response.get("series", {})
+
+    def get_market(self, ticker: str) -> Dict:
+        """
+        Fetch specific market by ticker.
+
+        Args:
+            ticker: Market ticker (e.g., "TEMPUSNYC20JUN-H")
+
+        Returns:
+            Market object with current price and volume
+        """
+        response = self._request("GET", f"/markets/{ticker}")
+        return response.get("market", {})
+
+    def get_orderbook(self, ticker: str) -> Dict:
+        """
+        Fetch orderbook for a specific market.
+
+        Args:
+            ticker: Market ticker
+
+        Returns:
+            Orderbook with yes_dollars and no_dollars bids
+        """
+        response = self._request("GET", f"/markets/{ticker}/orderbook")
+        return response.get("orderbook_fp", {})
+
+    def get_orderbooks(self, tickers: List[str]) -> Dict[str, Dict]:
+        """
+        Fetch orderbooks for multiple markets.
+
+        Args:
+            tickers: List of market tickers
+
+        Returns:
+            Dict mapping ticker → orderbook
+        """
+        data = {"tickers": tickers}
+        response = self._request("POST", "/markets/orderbooks", data)
+        return response.get("orderbooks", {})
+
+    def search_markets(self, search_term: str) -> List[Dict]:
+        """
+        Search for markets by ticker/name containing search term.
+
+        Args:
+            search_term: Search string (e.g., "TEMP", "NYC")
+
+        Returns:
+            List of matching markets
+        """
+        # Search across all statuses to find markets
+        all_markets = []
+        for status in ["open", "unopened", "closed", "settled"]:
+            markets = self.get_markets(status=status)
+            logger.debug(f"Found {len(markets)} markets with status={status}")
+            all_markets.extend(markets)
+
+        logger.debug(f"Total markets across all statuses: {len(all_markets)}")
+
+        matched = [
+            m for m in all_markets
+            if search_term.lower() in m.get("ticker", "").lower()
+            or search_term.lower() in m.get("title", "").lower()
+        ]
+
+        logger.debug(f"Markets matching '{search_term}': {len(matched)}")
+        if len(all_markets) > 0 and len(matched) == 0:
+            # Show first market to understand structure
+            logger.debug(f"Sample market structure: {all_markets[0]}")
+
+        return matched
+
+    def get_temperature_markets(self, city_name: str) -> List[Dict]:
+        """
+        Find all temperature markets for a specific city.
+
+        Args:
+            city_name: City name (e.g., "NYC", "New York")
+
+        Returns:
+            List of matching temperature markets
+        """
+        search_terms = [city_name, city_name[:3].upper()]
+        markets = []
+
+        for term in search_terms:
+            found = self.search_markets(term)
+            for market in found:
+                # Filter to temperature-related markets
+                title = market.get("title", "").upper()
+                if any(keyword in title for keyword in ["TEMP", "HIGH", "LOW", "TEMPERATURE"]):
+                    if market not in markets:
+                        markets.append(market)
+
+        return markets
+
+    def estimate_market_probability(self, orderbook: Dict) -> float:
+        """
+        Estimate market-implied probability from orderbook.
+
+        For binary markets, uses the mid-price between best yes and no bids.
+
+        Args:
+            orderbook: Orderbook with yes_dollars and no_dollars
+
+        Returns:
+            Estimated probability (0.0-1.0)
+        """
+        yes_bids = orderbook.get("yes_dollars", [])
+        no_bids = orderbook.get("no_dollars", [])
+
+        if not yes_bids or not no_bids:
+            return 0.5  # No data, return neutral
+
+        # Best (last) bid on each side
+        best_yes = float(yes_bids[-1][0]) if yes_bids else 0.5
+        best_no = float(no_bids[-1][0]) if no_bids else 0.5
+
+        # Implied probability (YES probability)
+        # YES price + NO price ≈ $1.00 in binary markets
+        total = best_yes + best_no
+        if total > 0:
+            prob = best_yes / total
+        else:
+            prob = 0.5
+
+        return max(0.0, min(1.0, prob))
+
+    def get_portfolio_balance(self) -> Dict:
+        """
+        Get current portfolio balance and positions.
+
+        Returns:
+            Portfolio object with balance (in cents)
+        """
+        response = self._request("GET", "/portfolio/balance")
+        return response.get("portfolio", {})
+
+    def get_positions(self) -> List[Dict]:
+        """
+        Get current market positions.
+
+        Returns:
+            List of position objects
+        """
+        response = self._request("GET", "/portfolio/positions")
+        return response.get("positions", [])
+
+
+def test_connection(api_key_id: str, private_key_pem: str):
+    """Test API connection and authentication."""
+    client = KalshiAPIClient(api_key_id, private_key_pem)
+
+    try:
+        # Test portfolio endpoint
+        portfolio = client.get_portfolio_balance()
+        if portfolio:
+            print("✓ API authentication successful")
+            print(f"  Balance: ${portfolio.get('balance', 0) / 100:.2f}")
+            return True
+        else:
+            print("✗ API authentication failed")
+            return False
+    except Exception as e:
+        print(f"✗ API connection error: {e}")
+        return False

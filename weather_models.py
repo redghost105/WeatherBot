@@ -2,7 +2,7 @@
 Unified weather data models for normalization across all sources.
 """
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from enum import Enum
 
@@ -117,7 +117,7 @@ class LocationWeatherData:
     ensemble_forecast: List[EnsembleData] = field(default_factory=list)
     historical_observations: List[HistoricalObservation] = field(default_factory=list)
 
-    last_updated: datetime = field(default_factory=datetime.utcnow)
+    last_updated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     sources_used: List[WeatherSource] = field(default_factory=list)
 
     def add_source(self, source: WeatherSource):
@@ -137,4 +137,4 @@ class ValidationMetrics:
     matched_count: int
     variable: str  # e.g., "temperature", "wind_speed"
     source: WeatherSource = WeatherSource.OPEN_METEO
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))

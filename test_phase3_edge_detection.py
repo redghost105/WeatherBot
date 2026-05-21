@@ -457,16 +457,16 @@ def test_confidence_override():
 
     # Simulate very low confidence by using old data
     from weather_models import LocationWeatherData, CurrentWeather
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     # Create stale weather data (100+ minutes old)
     stale_weather = LocationWeatherData(
         location_name="TEST",
         latitude=0,
         longitude=0,
-        last_updated=datetime.now(datetime.UTC) - timedelta(minutes=120) if hasattr(datetime, 'UTC') else datetime.utcnow() - timedelta(minutes=120),
+        last_updated=datetime.now(timezone.utc) - timedelta(minutes=120),
         current=CurrentWeather(
-            timestamp=datetime.now(datetime.UTC) if hasattr(datetime, 'UTC') else datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             temperature=20,
             temperature_2m=20,
             humidity=50
