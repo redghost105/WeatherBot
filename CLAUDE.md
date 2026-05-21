@@ -1,7 +1,21 @@
 <!-- gitnexus:start -->
+
+# ⚠️ CRITICAL REQUIREMENT: NO SYNTHETIC DATA EVER
+
+**ABSOLUTE RULE**: All data in this project MUST be REAL from Kalshi API or verified sources.
+- ❌ NEVER use synthetic/mock data generators
+- ✅ ALWAYS fetch real Kalshi market data
+- ✅ ALWAYS use real Open-Meteo historical weather
+- ✅ ALWAYS use real NWS temperature outcomes
+- ✅ Use real data for ALL backtests and examples
+
+This is non-negotiable. Every test, demo, and backtest MUST use live/real data.
+
+---
+
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **WeatherBot** (1883 symbols, 3386 relationships, 151 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **WeatherBot** (2462 symbols, 4112 relationships, 153 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
