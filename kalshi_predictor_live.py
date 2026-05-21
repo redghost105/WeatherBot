@@ -101,7 +101,8 @@ def fetch_kalshi_markets(kalshi: KalshiAPIClient, city_name: str) -> Dict[float,
 
         logger.debug(f"Fetching markets for {city_name} using series ticker: {series_ticker}")
 
-        # Fetch markets using series_ticker parameter
+        # Fetch all available markets using series_ticker parameter
+        # Will filter by date and status below
         found_markets = kalshi.get_markets(status=None, series_ticker=series_ticker)
 
         if not found_markets:
@@ -110,9 +111,29 @@ def fetch_kalshi_markets(kalshi: KalshiAPIClient, city_name: str) -> Dict[float,
 
         logger.debug(f"Found {len(found_markets)} temperature markets for {city_name}")
 
-        # Limit to first 10 markets to avoid timeout (API calls are slow)
-        # Focus on recent markets which have better liquidity
-        markets_to_process = found_markets[:10]
+        # Filter to only future/current markets (skip already-closed markets)
+        now = datetime.now(timezone.utc)
+        recent_markets = []
+
+        for market in found_markets:
+            ticker = market.get("ticker", "")
+            try:
+                # Extract settlement date from ticker
+                # Format: KXHIGHNY-26MAY21-T68 where 26MAY21 is YYMONDD (year-month-day)
+                parts = ticker.split("-")
+                if len(parts) >= 2:
+                    date_str = parts[1]  # e.g., "26MAY21" = 2026-05-21
+                    # Parse as YYMONDD (year-month-day), not DDMONYY
+                    market_date = datetime.strptime(date_str, "%y%b%d").replace(tzinfo=timezone.utc)
+                    # Include markets for today and future (skip past markets)
+                    if market_date.date() >= now.date():
+                        recent_markets.append(market)
+            except Exception as e:
+                logger.debug(f"Could not parse date from {ticker}: {e}")
+                recent_markets.append(market)
+
+        # Limit to first 10 to avoid timeout
+        markets_to_process = recent_markets[:10]
         logger.info(f"Processing {len(markets_to_process)} markets (out of {len(found_markets)}) for {city_name}")
 
         # Fetch orderbooks for each market
