@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=WeatherBot Dashboard
+Comment=Real-time trading monitoring dashboard
+Exec=python3 /home/carter/claude_programs/Polymarket/web_dashboard.py
+Icon=/home/carter/claude_programs/Polymarket/weatherbot-icon.svg
+Terminal=false
+Categories=Office;Finance;
+X-AppImage-Version=1.0.0
+StartupNotify=true
+
+# Desktop file for Ubuntu launcher
+# Install with: cp weatherbot-dashboard.desktop ~/.local/share/applications/
+# Then pin to taskbar in Activities menu

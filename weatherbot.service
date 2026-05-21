@@ -1,0 +1,36 @@
+[Unit]
+Description=WeatherBot Trading System
+Documentation=https://github.com/redghost105/WeatherBot
+After=network.target
+
+[Service]
+Type=simple
+User=carter
+WorkingDirectory=/home/carter/claude_programs/Polymarket
+
+# Main command
+ExecStart=/usr/bin/python3 /home/carter/claude_programs/Polymarket/main_bot.py
+
+# Restart on failure
+Restart=always
+RestartSec=10
+
+# Process management
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=weatherbot
+
+# Resource limits
+MemoryLimit=500M
+CPUQuota=50%
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Environment variables
+Environment="PYTHONUNBUFFERED=1"
+EnvironmentFile=/home/carter/claude_programs/Polymarket/.env
+
+[Install]
+WantedBy=multi-user.target
