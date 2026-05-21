@@ -69,7 +69,7 @@ class DesktopDashboard:
                 [sg.Text("Daily PnL:", font=('Helvetica', 10)), sg.Text(self.portfolio["daily_pnl"], key="-DAILY-", font=('Helvetica', 10, 'bold'), text_color='#4CAF50')],
                 [sg.Text("Total PnL:", font=('Helvetica', 10)), sg.Text(self.portfolio["total_pnl"], key="-TOTAL-", font=('Helvetica', 10, 'bold'), text_color='#4CAF50')],
             ])],
-            [sg.Separator()],
+            [sg.HSeparator()],
         ]
 
         # Performance Section
@@ -82,7 +82,7 @@ class DesktopDashboard:
                 [sg.Text("Sharpe Ratio:", font=('Helvetica', 10)), sg.Text(self.portfolio["sharpe"], key="-SHARPE-", font=('Helvetica', 10, 'bold'))],
                 [sg.Text("Max Drawdown:", font=('Helvetica', 10)), sg.Text("8.3%", key="-DRAWDOWN-", font=('Helvetica', 10, 'bold'))],
             ])],
-            [sg.Separator()],
+            [sg.HSeparator()],
         ]
 
         # Status Section
@@ -95,7 +95,7 @@ class DesktopDashboard:
                 [sg.Text(f"Kalshi: {self.status['kalshi']}", key="-KALSHI-", font=('Helvetica', 10))],
                 [sg.Text(f"Open-Meteo: {self.status['open_meteo']}", key="-METEO-", font=('Helvetica', 10))],
             ])],
-            [sg.Separator()],
+            [sg.HSeparator()],
         ]
 
         # Positions Section
@@ -110,7 +110,7 @@ class DesktopDashboard:
                 background_color='#2B2B2B',
                 text_color='#FFFFFF'
             )],
-            [sg.Separator()],
+            [sg.HSeparator()],
         ]
 
         # Recent Events Section
@@ -125,7 +125,7 @@ class DesktopDashboard:
                 background_color='#2B2B2B',
                 text_color='#FFFFFF'
             )],
-            [sg.Separator()],
+            [sg.HSeparator()],
         ]
 
         # Controls Section
@@ -142,7 +142,7 @@ class DesktopDashboard:
         layout = [
             [sg.Text("🤖 WEATHERBOT DASHBOARD", font=('Helvetica', 18, 'bold'), text_color='#2196F3')],
             [sg.Text(f"Last Updated: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}", key="-TIMESTAMP-", font=('Helvetica', 9))],
-            [sg.Separator()],
+            [sg.HSeparator()],
             *portfolio_layout,
             *performance_layout,
             *status_layout,
