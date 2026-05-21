@@ -22,11 +22,10 @@ Architecture:
 
 import json
 import logging
-import statistics
 from dataclasses import dataclass, asdict, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from enum import Enum
 
 from kalshi_api_client import KalshiAPIClient

@@ -12,9 +12,7 @@ import logging
 import requests
 from typing import Dict, Optional, List
 from datetime import datetime
-from pathlib import Path
 import base64
-import hashlib
 import time
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding

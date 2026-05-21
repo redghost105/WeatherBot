@@ -11,14 +11,12 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
-import sqlite3
-
 from kalshi_api_client import KalshiAPIClient
-from weather_predictor import HistoricalBiasLearner, MarketEdgeSummary
+from weather_predictor import HistoricalBiasLearner
 
 logger = logging.getLogger(__name__)
 
