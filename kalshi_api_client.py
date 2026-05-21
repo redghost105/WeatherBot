@@ -29,9 +29,15 @@ class KalshiAPIClient:
 
     Handles authentication via RSA-signed requests and provides
     methods to fetch market data, orderbooks, and portfolio info.
+
+    Two base URLs:
+    - external-api.kalshi.com: Public market data (no auth required)
+    - trading-api.kalshi.com: Authenticated portfolio endpoints (requires auth)
     """
 
-    BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
+    BASE_URL_PUBLIC = "https://external-api.kalshi.com/trade-api/v2"
+    BASE_URL_TRADING = "https://api.elections.kalshi.com/trade-api/v2"  # New endpoint as of 2026
+    BASE_URL = BASE_URL_PUBLIC  # Default for backward compatibility
 
     def __init__(self, api_key_id: str, private_key_pem: str):
         """
@@ -60,7 +66,7 @@ class KalshiAPIClient:
         """
         Sign a request using RSA-PSS-SHA256.
 
-        Kalshi requires signature format: timestamp\nmethod\npath
+        Kalshi requires signature format: {timestamp}{method}{path} (NO NEWLINES)
 
         Args:
             method: HTTP method (GET, POST, etc.)
@@ -70,8 +76,8 @@ class KalshiAPIClient:
         Returns:
             Base64-encoded RSA-PSS signature
         """
-        # Signature string: TIMESTAMP\nMETHOD\nPATH (no body!)
-        signature_string = f"{timestamp_ms}\n{method}\n{path}"
+        # Signature string: TIMESTAMPMETHODPATH (concatenated, NO NEWLINES!)
+        signature_string = f"{timestamp_ms}{method}{path}"
 
         # Sign with RSA-PSS-SHA256 (Kalshi uses PSS, not PKCS1v15)
         signature = self.private_key.sign(
@@ -90,15 +96,25 @@ class KalshiAPIClient:
         """
         Make an authenticated request to Kalshi API.
 
+        Routes to correct base URL:
+        - Portfolio endpoints → trading-api.kalshi.com
+        - Market data endpoints → external-api.kalshi.com
+
         Args:
             method: HTTP method
-            endpoint: API endpoint (e.g., "/markets")
+            endpoint: API endpoint (e.g., "/markets" or "/portfolio/orders")
             data: Request body (for POST/PUT/DELETE)
 
         Returns:
             Response JSON
         """
-        url = f"{self.BASE_URL}{endpoint}"
+        # Use trading API for portfolio endpoints, public API for market data
+        if endpoint.startswith("/portfolio") or endpoint.startswith("/account"):
+            base_url = self.BASE_URL_TRADING
+        else:
+            base_url = self.BASE_URL_PUBLIC
+
+        url = f"{base_url}{endpoint}"
 
         # Get current timestamp in milliseconds
         timestamp_ms = int(time.time() * 1000)
