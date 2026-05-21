@@ -1,73 +1,259 @@
 """
-Phase 11: Native Desktop Dashboard (PySimpleGUI)
+Phase 11: Native Desktop Dashboard (PySimpleGUI) - Real Kalshi API Data
 
 Standalone desktop application for real-time monitoring.
-No web server required - runs as native GUI application.
+Fetches live portfolio data from Kalshi API (no synthetic data).
 """
 
 import PySimpleGUI as sg
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 import json
+import os
+import logging
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Import Kalshi API client
+from kalshi_api_client import KalshiAPIClient
 
 # Configure theme
 sg.theme('DarkBlue3')
 sg.set_options(font=('Helvetica', 10))
 
 
-class DesktopDashboard:
-    """Native desktop dashboard using PySimpleGUI."""
+class RealDataDashboard:
+    """Native desktop dashboard using PySimpleGUI with real Kalshi API data."""
 
     def __init__(self):
-        """Initialize dashboard."""
+        """Initialize dashboard with Kalshi API client."""
         self.running = True
         self.refresh_interval = 15  # seconds
 
-        # Sample data (in production, fetch from real sources)
-        self.portfolio = {
-            "total_capital": "$10,000.00",
-            "available": "$5,000.00",
-            "daily_pnl": "+$245.50",
-            "total_pnl": "+$2,345.60",
-            "open_positions": 3,
-            "win_rate": "62.5%",
-            "sharpe": "1.45"
+        # Initialize Kalshi API client
+        self.kalshi_client = None
+        self.init_kalshi_client()
+
+        # Cache for API data
+        self.portfolio_data = {}
+        self.positions_data = []
+        self.orders_data = []
+        self.api_health = {
+            "kalshi": False,
+            "open_meteo": False
         }
 
-        self.positions = [
-            {"city": "NYC", "bucket": ">75°F", "size": "50", "entry": "$0.62", "current": "$0.68", "pnl": "+$300"},
-            {"city": "Chicago", "bucket": ">65°F", "size": "75", "entry": "$0.54", "current": "$0.58", "pnl": "+$300"},
-            {"city": "LA", "bucket": ">85°F", "size": "25", "entry": "$0.65", "current": "$0.72", "pnl": "+$175"}
-        ]
+        # Refresh data on startup
+        self.refresh_all_data()
 
-        self.status = {
-            "system": "✅ RUNNING",
+    def init_kalshi_client(self):
+        """Initialize Kalshi API client from environment variables."""
+        try:
+            api_key_id = os.getenv('KALSHI_API_KEY_ID')
+            private_key_path = os.getenv('KALSHI_PRIVATE_KEY_PATH')
+
+            if not api_key_id or not private_key_path:
+                logger.warning("⚠️ Kalshi API credentials not configured in .env")
+                self.kalshi_client = None
+                return
+
+            # Read private key
+            with open(private_key_path, 'r') as f:
+                private_key_pem = f.read()
+
+            self.kalshi_client = KalshiAPIClient(api_key_id, private_key_pem)
+            logger.info("✅ Kalshi API client initialized")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Kalshi API client: {e}")
+            self.kalshi_client = None
+
+    def check_kalshi_health(self) -> bool:
+        """Check if Kalshi API is responding."""
+        if not self.kalshi_client:
+            return False
+        try:
+            self.kalshi_client.get_portfolio_balance()
+            self.api_health["kalshi"] = True
+            return True
+        except Exception as e:
+            logger.warning(f"Kalshi API health check failed: {e}")
+            self.api_health["kalshi"] = False
+            return False
+
+    def check_open_meteo_health(self) -> bool:
+        """Check if Open-Meteo API is responding."""
+        try:
+            import requests
+            response = requests.get("https://archive-api.open-meteo.com/v1/archive", timeout=5, params={
+                "latitude": 40.7128,
+                "longitude": -74.0060,
+                "start_date": "2026-05-21",
+                "end_date": "2026-05-21",
+                "daily": "temperature_2m_max"
+            })
+            self.api_health["open_meteo"] = response.status_code == 200
+            return self.api_health["open_meteo"]
+        except Exception as e:
+            logger.warning(f"Open-Meteo health check failed: {e}")
+            self.api_health["open_meteo"] = False
+            return False
+
+    def refresh_all_data(self):
+        """Refresh all data from Kalshi API."""
+        try:
+            if self.kalshi_client:
+                # Fetch portfolio balance
+                self.portfolio_data = self.kalshi_client.get_portfolio_balance()
+
+                # Fetch positions
+                self.positions_data = self.kalshi_client.get_positions()
+
+                # Fetch recent orders (limit to 10)
+                orders = self.kalshi_client.list_orders(status=None)
+                self.orders_data = orders[:10] if orders else []
+
+            # Check API health
+            self.check_kalshi_health()
+            self.check_open_meteo_health()
+        except Exception as e:
+            logger.error(f"Error refreshing data: {e}")
+
+    def format_cents_to_currency(self, cents: int) -> str:
+        """Convert cents to currency string."""
+        dollars = cents / 100.0
+        return f"${dollars:,.2f}"
+
+    def get_portfolio_summary(self) -> Dict[str, str]:
+        """Get formatted portfolio summary from real data."""
+        if not self.portfolio_data:
+            return {
+                "total_capital": "$0.00",
+                "available": "$0.00",
+                "daily_pnl": "$0.00",
+                "total_pnl": "$0.00",
+                "open_positions": "0"
+            }
+
+        balance_cents = self.portfolio_data.get("balance", 0)
+        portfolio_value_cents = self.portfolio_data.get("portfolio_value", balance_cents)
+
+        total_pnl_cents = portfolio_value_cents - balance_cents
+
+        return {
+            "total_capital": self.format_cents_to_currency(portfolio_value_cents),
+            "available": self.format_cents_to_currency(balance_cents),
+            "daily_pnl": self.format_cents_to_currency(total_pnl_cents),
+            "total_pnl": self.format_cents_to_currency(total_pnl_cents),
+            "open_positions": str(len(self.positions_data))
+        }
+
+    def get_performance_metrics(self) -> Dict[str, str]:
+        """Get performance metrics from real data."""
+        open_count = len(self.positions_data)
+
+        # Calculate PnL metrics from positions
+        total_pnl_cents = 0
+        total_cost_cents = 0
+
+        for pos in self.positions_data:
+            realized_pnl_cents = pos.get("realized_pnl_cents", 0)
+            unrealized_pnl_cents = pos.get("unrealized_pnl_cents", 0)
+            cost_cents = pos.get("cost_cents", 0)
+
+            total_pnl_cents += realized_pnl_cents + unrealized_pnl_cents
+            total_cost_cents += cost_cents
+
+        # Calculate win rate from orders
+        win_rate = 0.0
+        if self.orders_data:
+            resolved = [o for o in self.orders_data if o.get("status") == "resolved"]
+            if resolved:
+                wins = sum(1 for o in resolved if o.get("pnl_cents", 0) > 0)
+                win_rate = (wins / len(resolved)) * 100
+
+        return {
+            "open_positions": str(open_count),
+            "win_rate": f"{win_rate:.1f}%",
+            "sharpe": "N/A",  # Would need historical daily returns
+            "max_drawdown": "N/A"  # Would need equity curve
+        }
+
+    def get_system_status(self) -> Dict[str, str]:
+        """Get system status."""
+        return {
+            "system": "✅ RUNNING" if self.running else "⏸️ PAUSED",
             "breaker": "✅ INACTIVE",
-            "kalshi": "✅ HEALTHY",
-            "open_meteo": "✅ HEALTHY",
+            "kalshi": "✅ HEALTHY" if self.api_health["kalshi"] else "❌ UNHEALTHY",
+            "open_meteo": "✅ HEALTHY" if self.api_health["open_meteo"] else "❌ UNHEALTHY",
             "nws": "✅ HEALTHY"
         }
 
-        self.recent_events = [
-            {"time": "14:35:22", "type": "Edge Detected", "city": "NYC", "edge": "13.0%"},
-            {"time": "14:22:15", "type": "Order Executed", "city": "Chicago", "edge": "4.0%"},
-            {"time": "14:10:50", "type": "Trade Resolved", "city": "NYC", "edge": "WIN"},
-        ]
+    def format_positions(self) -> List[str]:
+        """Format open positions for display."""
+        formatted = []
+        for pos in self.positions_data:
+            ticker = pos.get("market_ticker", "N/A")
+            count = pos.get("position_fp", 0)  # contracts
+            cost = self.format_cents_to_currency(pos.get("cost_cents", 0))
+            realized_pnl = self.format_cents_to_currency(pos.get("realized_pnl_cents", 0))
+            unrealized_pnl = self.format_cents_to_currency(pos.get("unrealized_pnl_cents", 0))
+
+            line = f"{ticker:20} | Contracts: {count:4.0f} | Cost: {cost:10} | Realized: {realized_pnl:10} | Unrealized: {unrealized_pnl}"
+            formatted.append(line)
+
+        return formatted if formatted else ["No open positions"]
+
+    def format_recent_events(self) -> List[str]:
+        """Format recent orders as events."""
+        formatted = []
+        for order in self.orders_data[:5]:  # Last 5 orders
+            ticker = order.get("market_ticker", "N/A")
+            timestamp = order.get("created_ts_ms", 0)
+
+            # Convert timestamp to readable format
+            if timestamp:
+                dt = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
+                time_str = dt.strftime('%H:%M:%S')
+            else:
+                time_str = "N/A"
+
+            status = order.get("status", "unknown")
+            side = order.get("side", "N/A")
+            action = order.get("action", "N/A")
+            pnl = self.format_cents_to_currency(order.get("pnl_cents", 0))
+
+            line = f"{time_str} | {ticker:20} | {action} {side:3} | Status: {status:10} | PnL: {pnl}"
+            formatted.append(line)
+
+        return formatted if formatted else ["No recent events"]
 
     def create_window(self):
         """Create the GUI window."""
 
+        # Get real data
+        portfolio = self.get_portfolio_summary()
+        performance = self.get_performance_metrics()
+        status = self.get_system_status()
+        positions_list = self.format_positions()
+        events_list = self.format_recent_events()
+
         # Portfolio Section
         portfolio_layout = [
-            [sg.Text("💰 PORTFOLIO", font=('Helvetica', 14, 'bold'))],
+            [sg.Text("💰 PORTFOLIO (REAL DATA FROM KALSHI API)", font=('Helvetica', 14, 'bold'))],
             [sg.Column([
-                [sg.Text("Total Capital:", font=('Helvetica', 10)), sg.Text(self.portfolio["total_capital"], key="-CAPITAL-", font=('Helvetica', 10, 'bold'))],
-                [sg.Text("Available:", font=('Helvetica', 10)), sg.Text(self.portfolio["available"], key="-AVAILABLE-", font=('Helvetica', 10, 'bold'))],
+                [sg.Text("Total Capital:", font=('Helvetica', 10)), sg.Text(portfolio["total_capital"], key="-CAPITAL-", font=('Helvetica', 10, 'bold'))],
+                [sg.Text("Available:", font=('Helvetica', 10)), sg.Text(portfolio["available"], key="-AVAILABLE-", font=('Helvetica', 10, 'bold'))],
             ]), sg.Column([
-                [sg.Text("Daily PnL:", font=('Helvetica', 10)), sg.Text(self.portfolio["daily_pnl"], key="-DAILY-", font=('Helvetica', 10, 'bold'), text_color='#4CAF50')],
-                [sg.Text("Total PnL:", font=('Helvetica', 10)), sg.Text(self.portfolio["total_pnl"], key="-TOTAL-", font=('Helvetica', 10, 'bold'), text_color='#4CAF50')],
+                [sg.Text("Daily PnL:", font=('Helvetica', 10)), sg.Text(portfolio["daily_pnl"], key="-DAILY-", font=('Helvetica', 10, 'bold'), text_color='#4CAF50')],
+                [sg.Text("Total PnL:", font=('Helvetica', 10)), sg.Text(portfolio["total_pnl"], key="-TOTAL-", font=('Helvetica', 10, 'bold'), text_color='#4CAF50')],
             ])],
             [sg.HSeparator()],
         ]
@@ -76,11 +262,11 @@ class DesktopDashboard:
         performance_layout = [
             [sg.Text("📊 PERFORMANCE", font=('Helvetica', 14, 'bold'))],
             [sg.Column([
-                [sg.Text("Open Positions:", font=('Helvetica', 10)), sg.Text(self.portfolio["open_positions"], key="-OPEN-", font=('Helvetica', 10, 'bold'))],
-                [sg.Text("Win Rate:", font=('Helvetica', 10)), sg.Text(self.portfolio["win_rate"], key="-WINRATE-", font=('Helvetica', 10, 'bold'))],
+                [sg.Text("Open Positions:", font=('Helvetica', 10)), sg.Text(performance["open_positions"], key="-OPEN-", font=('Helvetica', 10, 'bold'))],
+                [sg.Text("Win Rate:", font=('Helvetica', 10)), sg.Text(performance["win_rate"], key="-WINRATE-", font=('Helvetica', 10, 'bold'))],
             ]), sg.Column([
-                [sg.Text("Sharpe Ratio:", font=('Helvetica', 10)), sg.Text(self.portfolio["sharpe"], key="-SHARPE-", font=('Helvetica', 10, 'bold'))],
-                [sg.Text("Max Drawdown:", font=('Helvetica', 10)), sg.Text("8.3%", key="-DRAWDOWN-", font=('Helvetica', 10, 'bold'))],
+                [sg.Text("Sharpe Ratio:", font=('Helvetica', 10)), sg.Text(performance["sharpe"], key="-SHARPE-", font=('Helvetica', 10, 'bold'))],
+                [sg.Text("Max Drawdown:", font=('Helvetica', 10)), sg.Text(performance["max_drawdown"], key="-DRAWDOWN-", font=('Helvetica', 10, 'bold'))],
             ])],
             [sg.HSeparator()],
         ]
@@ -89,22 +275,21 @@ class DesktopDashboard:
         status_layout = [
             [sg.Text("🔌 SYSTEM STATUS", font=('Helvetica', 14, 'bold'))],
             [sg.Column([
-                [sg.Text(f"Status: {self.status['system']}", key="-STATUS-", font=('Helvetica', 10))],
-                [sg.Text(f"Circuit Breaker: {self.status['breaker']}", key="-BREAKER-", font=('Helvetica', 10))],
+                [sg.Text(f"Status: {status['system']}", key="-STATUS-", font=('Helvetica', 10))],
+                [sg.Text(f"Circuit Breaker: {status['breaker']}", key="-BREAKER-", font=('Helvetica', 10))],
             ]), sg.Column([
-                [sg.Text(f"Kalshi: {self.status['kalshi']}", key="-KALSHI-", font=('Helvetica', 10))],
-                [sg.Text(f"Open-Meteo: {self.status['open_meteo']}", key="-METEO-", font=('Helvetica', 10))],
+                [sg.Text(f"Kalshi: {status['kalshi']}", key="-KALSHI-", font=('Helvetica', 10))],
+                [sg.Text(f"Open-Meteo: {status['open_meteo']}", key="-METEO-", font=('Helvetica', 10))],
             ])],
             [sg.HSeparator()],
         ]
 
         # Positions Section
         positions_layout = [
-            [sg.Text("📍 OPEN POSITIONS", font=('Helvetica', 14, 'bold'))],
+            [sg.Text("📍 OPEN POSITIONS (FROM KALSHI API)", font=('Helvetica', 14, 'bold'))],
             [sg.Listbox(
-                values=[f"{p['city']} {p['bucket']:12} | Size: {p['size']:3} | Entry: {p['entry']} | Current: {p['current']} | PnL: {p['pnl']}"
-                        for p in self.positions],
-                size=(90, 4),
+                values=positions_list,
+                size=(100, 4),
                 key="-POSITIONS-",
                 disabled=True,
                 background_color='#2B2B2B',
@@ -115,11 +300,10 @@ class DesktopDashboard:
 
         # Recent Events Section
         events_layout = [
-            [sg.Text("📝 RECENT EVENTS", font=('Helvetica', 14, 'bold'))],
+            [sg.Text("📝 RECENT EVENTS (FROM ORDER HISTORY)", font=('Helvetica', 14, 'bold'))],
             [sg.Listbox(
-                values=[f"{e['time']} | {e['type']:20} | {e['city']:10} | Edge: {e['edge']:6}"
-                        for e in self.recent_events],
-                size=(90, 4),
+                values=events_list,
+                size=(100, 4),
                 key="-EVENTS-",
                 disabled=True,
                 background_color='#2B2B2B',
@@ -156,7 +340,7 @@ class DesktopDashboard:
             "WeatherBot Dashboard",
             layout,
             icon='/home/carter/claude_programs/Polymarket/weatherbot-icon.svg',
-            size=(1000, 900),
+            size=(1200, 900),
             finalize=True,
             resizable=True,
             element_padding=(5, 5)
@@ -165,24 +349,44 @@ class DesktopDashboard:
         return window
 
     def update_data(self, window):
-        """Update all displayed data."""
+        """Update all displayed data from Kalshi API."""
+        self.refresh_all_data()
+
         current_time = datetime.now(timezone.utc).strftime('%H:%M:%S UTC')
         window["-TIMESTAMP-"].update(f"Last Updated: {current_time}")
 
-        # Update portfolio (in production, fetch real data)
-        window["-CAPITAL-"].update(self.portfolio["total_capital"])
-        window["-DAILY-"].update(self.portfolio["daily_pnl"])
+        # Update portfolio
+        portfolio = self.get_portfolio_summary()
+        window["-CAPITAL-"].update(portfolio["total_capital"])
+        window["-AVAILABLE-"].update(portfolio["available"])
+        window["-DAILY-"].update(portfolio["daily_pnl"])
+        window["-TOTAL-"].update(portfolio["total_pnl"])
 
-        # Refresh complete
-        window["-REFRESH-"].update("✓ REFRESHED")
+        # Update performance
+        performance = self.get_performance_metrics()
+        window["-OPEN-"].update(performance["open_positions"])
+        window["-WINRATE-"].update(performance["win_rate"])
+        window["-SHARPE-"].update(performance["sharpe"])
+        window["-DRAWDOWN-"].update(performance["max_drawdown"])
+
+        # Update status
+        status = self.get_system_status()
+        window["-STATUS-"].update(f"Status: {status['system']}")
+        window["-KALSHI-"].update(f"Kalshi: {status['kalshi']}")
+        window["-METEO-"].update(f"Open-Meteo: {status['open_meteo']}")
+
+        # Update positions and events
+        window["-POSITIONS-"].update(self.format_positions())
+        window["-EVENTS-"].update(self.format_recent_events())
+
         window.refresh()
 
     def run(self):
         """Run the dashboard."""
         window = self.create_window()
 
-        print("🚀 WeatherBot Desktop Dashboard started")
-        print("Press any button or close window to interact")
+        print("🚀 WeatherBot Desktop Dashboard started (Real Kalshi API Data)")
+        print("Press REFRESH button or wait 15 seconds for automatic updates")
 
         last_refresh = time.time()
 
@@ -199,9 +403,11 @@ class DesktopDashboard:
                 self.running = False
                 break
             elif event == "-PAUSE-":
+                self.running = False
                 window["-STATUS-"].update(f"Status: ⏸️  PAUSED")
                 print("Trading paused")
             elif event == "-RESUME-":
+                self.running = True
                 window["-STATUS-"].update(f"Status: ✅ RUNNING")
                 print("Trading resumed")
             elif event == "-REFRESH-":
@@ -214,14 +420,16 @@ class DesktopDashboard:
 def main():
     """Main entry point."""
     try:
-        dashboard = DesktopDashboard()
+        dashboard = RealDataDashboard()
         dashboard.run()
-    except ImportError:
-        print("❌ PySimpleGUI not installed. Install with:")
-        print("   pip3 install PySimpleGUI")
-        print("\nThen run again: python3 desktop_dashboard.py")
+    except ImportError as e:
+        print(f"❌ Import Error: {e}")
+        print("   Required modules may not be installed.")
+        print("   Install with: pip3 install PySimpleGUI python-dotenv requests cryptography")
     except Exception as e:
         print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
