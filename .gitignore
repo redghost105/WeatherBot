@@ -6,3 +6,5 @@ __pycache__/
 *.log
 trade_journal.jsonl
 risk_manager_state.json
+.env
+.kalshi/
