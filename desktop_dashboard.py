@@ -206,6 +206,117 @@ class RealDataDashboard:
             "nws": "✅ HEALTHY"
         }
 
+    def get_position_side(self, ticker: str) -> str:
+        """Determine YES/NO side from most recent executed order for ticker."""
+        for order in self.orders_data:
+            if order.get('ticker') == ticker and order.get('status') == 'executed':
+                return (order.get('outcome_side') or order.get('side', 'yes')).upper()
+        return 'YES'
+
+    def close_position(self, ticker: str, side: str, quantity: float) -> bool:
+        """Execute a sell order to close the position."""
+        if not self.kalshi_client:
+            logger.error("Kalshi client not initialized")
+            return False
+        try:
+            order = self.kalshi_client.place_order(
+                ticker=ticker,
+                action='sell',
+                side=side.lower(),
+                count=max(1, int(quantity)),
+                time_in_force='fill_or_kill',
+            )
+            return bool(order.get('order_id'))
+        except Exception as e:
+            logger.error(f"Close position failed for {ticker}: {e}")
+            return False
+
+    def build_positions_layout(self) -> List:
+        """Build scrollable position boxes layout."""
+        self._position_close_map = {}
+        position_frames = []
+
+        for idx, pos in enumerate(self.positions_data):
+            ticker = pos.get('ticker', 'N/A')
+            if ticker == 'N/A' or not ticker:
+                continue
+
+            quantity = float(pos.get('position_fp', '0') or '0')
+            if quantity <= 0:
+                continue
+
+            exposure = pos.get('market_exposure_dollars', '0.00')
+            realized_pnl = pos.get('realized_pnl_dollars', '0.00')
+            side = self.get_position_side(ticker)
+
+            close_key = f'-CLOSE-{idx}-'
+            self._position_close_map[close_key] = (ticker, side, quantity)
+
+            frame_content = [
+                [sg.Text(f"{ticker}", font=('Helvetica', 11, 'bold'), text_color='#4CAF50')],
+                [sg.Text(f"Side: {side}", font=('Helvetica', 9), text_color='#2196F3')],
+                [sg.Text(f"Contracts: {quantity:.2f}", font=('Helvetica', 9))],
+                [sg.Text(f"Exposure: ${exposure}", font=('Helvetica', 9))],
+                [sg.Text(f"PnL: ${realized_pnl}", font=('Helvetica', 9), text_color='#4CAF50')],
+            ]
+
+            row = [
+                sg.Frame('', frame_content, relief=sg.RELIEF_SOLID, border_width=2,
+                         element_justification='left', background_color='#1A1A1A'),
+                sg.Button('CLOSE', key=close_key,
+                          button_color=('#FFFFFF', '#f44336'),
+                          size=(8, 3),
+                          tooltip=f'Market sell to close {ticker} {side}')
+            ]
+            position_frames.append(row)
+
+        if not position_frames:
+            position_frames = [[sg.Text("No open positions", text_color='#888888')]]
+
+        return position_frames
+
+    def build_events_layout(self) -> List:
+        """Build scrollable event boxes layout (vertical)."""
+        event_frames = []
+
+        for idx, order in enumerate(self.orders_data[:10]):
+            ticker = order.get('ticker', 'N/A')
+            created_time = order.get('created_time', '')
+
+            if created_time:
+                try:
+                    dt = datetime.fromisoformat(created_time.replace('Z', '+00:00'))
+                    time_str = dt.strftime('%H:%M:%S')
+                except:
+                    time_str = 'N/A'
+            else:
+                time_str = 'N/A'
+
+            status = order.get('status', 'unknown')
+            outcome_side = (order.get('outcome_side') or order.get('side', 'N/A')).upper()
+            action = order.get('action', 'N/A').upper()
+            fill_cost = order.get('taker_fill_cost_dollars', '0.00')
+
+            status_color = '#4CAF50' if status == 'executed' else '#FF9800' if status == 'resting' else '#888888'
+
+            frame_content = [
+                [sg.Text(ticker, font=('Helvetica', 9, 'bold'), text_color='#4CAF50')],
+                [sg.Text(f"{action} {outcome_side}", font=('Helvetica', 9), text_color='#2196F3')],
+                [sg.Text(f"Status: {status}", font=('Helvetica', 9), text_color=status_color)],
+                [sg.Text(f"Cost: ${fill_cost}", font=('Helvetica', 9))],
+                [sg.Text(f"Time: {time_str}", font=('Helvetica', 9), text_color='#888888')],
+            ]
+
+            event_frames.append(
+                [sg.Frame('', frame_content, relief=sg.RELIEF_SOLID, border_width=2,
+                          element_justification='left', background_color='#1A1A1A')]
+            )
+
+        if not event_frames:
+            event_frames = [[sg.Text("No recent events", text_color='#888888')]]
+
+        return event_frames
+
     def format_positions(self) -> List[str]:
         """Format open positions for display."""
         formatted = []
@@ -299,13 +410,12 @@ class RealDataDashboard:
         # Positions Section
         positions_layout = [
             [sg.Text("📍 OPEN POSITIONS (FROM KALSHI API)", font=('Helvetica', 14, 'bold'))],
-            [sg.Listbox(
-                values=positions_list,
-                size=(100, 4),
-                key="-POSITIONS-",
-                disabled=True,
-                background_color='#2B2B2B',
-                text_color='#FFFFFF'
+            [sg.Column(
+                self.build_positions_layout(),
+                scrollable=True,
+                vertical_scroll_only=True,
+                size=(1150, 220),
+                key='-POSITIONS-COL-'
             )],
             [sg.HSeparator()],
         ]
@@ -313,13 +423,12 @@ class RealDataDashboard:
         # Recent Events Section
         events_layout = [
             [sg.Text("📝 RECENT EVENTS (FROM ORDER HISTORY)", font=('Helvetica', 14, 'bold'))],
-            [sg.Listbox(
-                values=events_list,
-                size=(100, 4),
-                key="-EVENTS-",
-                disabled=True,
-                background_color='#2B2B2B',
-                text_color='#FFFFFF'
+            [sg.Column(
+                self.build_events_layout(),
+                scrollable=True,
+                vertical_scroll_only=True,
+                size=(1150, 220),
+                key='-EVENTS-COL-'
             )],
             [sg.HSeparator()],
         ]
@@ -359,6 +468,16 @@ class RealDataDashboard:
         )
 
         return window
+
+    def _rebuild_window(self, old_window):
+        """Close old window, refresh data, create new window at same position."""
+        pos = old_window.current_location()
+        old_window.close()
+        self.refresh_all_data()
+        new_window = self.create_window()
+        if pos:
+            new_window.move(*pos)
+        return new_window
 
     def update_data(self, window):
         """Update all displayed data from Kalshi API."""
@@ -402,28 +521,42 @@ class RealDataDashboard:
 
         last_refresh = time.time()
 
-        while self.running:
+        while True:
             event, values = window.read(timeout=500)
 
             # Auto-refresh every 15 seconds
             if time.time() - last_refresh >= self.refresh_interval:
-                self.update_data(window)
+                window = self._rebuild_window(window)
                 last_refresh = time.time()
+                continue
 
-            # Handle events
+            # Handle window close or EXIT button
             if event == sg.WINDOW_CLOSED or event == "-EXIT-":
-                self.running = False
                 break
+
+            # Handle close position buttons
+            elif event and event in getattr(self, '_position_close_map', {}):
+                ticker, side, qty = self._position_close_map[event]
+                success = self.close_position(ticker, side, qty)
+                msg = f"Closed {qty:.0f}x {ticker} ({side})" if success else f"Failed to close {ticker}"
+                sg.popup_quick_message(msg, auto_close_duration=2, keep_on_top=True)
+                if success:
+                    window = self._rebuild_window(window)
+                    last_refresh = time.time()
+
+            # Handle pause/resume
             elif event == "-PAUSE-":
                 self.running = False
-                window["-STATUS-"].update(f"Status: ⏸️  PAUSED")
                 print("Trading paused")
+
             elif event == "-RESUME-":
                 self.running = True
-                window["-STATUS-"].update(f"Status: ✅ RUNNING")
                 print("Trading resumed")
+
+            # Handle manual refresh
             elif event == "-REFRESH-":
-                self.update_data(window)
+                window = self._rebuild_window(window)
+                last_refresh = time.time()
 
         window.close()
         print("Dashboard closed")
