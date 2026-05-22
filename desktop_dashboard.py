@@ -210,40 +210,42 @@ class RealDataDashboard:
         """Format open positions for display."""
         formatted = []
         for pos in self.positions_data:
-            ticker = pos.get("market_ticker", "N/A")
-            count = pos.get("position_fp", 0)  # contracts
-            cost = self.format_cents_to_currency(pos.get("cost_cents", 0))
-            realized_pnl = self.format_cents_to_currency(pos.get("realized_pnl_cents", 0))
-            unrealized_pnl = self.format_cents_to_currency(pos.get("unrealized_pnl_cents", 0))
+            ticker = pos.get("ticker", "N/A")
+            count = float(pos.get("position_fp", "0"))  # contracts as fixed-point string
+            exposure = pos.get("market_exposure_dollars", "0.00")
+            realized_pnl = pos.get("realized_pnl_dollars", "0.00")
 
-            line = f"{ticker:20} | Contracts: {count:4.0f} | Cost: {cost:10} | Realized: {realized_pnl:10} | Unrealized: {unrealized_pnl}"
+            line = f"{ticker:20} | Contracts: {count:6.2f} | Exposure: {exposure:>10} | Realized PnL: {realized_pnl:>10}"
             formatted.append(line)
 
-        return formatted if formatted else ["No open positions"]
+        return "\n".join(formatted) if formatted else "No open positions"
 
     def format_recent_events(self) -> List[str]:
         """Format recent orders as events."""
         formatted = []
         for order in self.orders_data[:5]:  # Last 5 orders
-            ticker = order.get("market_ticker", "N/A")
-            timestamp = order.get("created_ts_ms", 0)
+            ticker = order.get("ticker", "N/A")
+            created_time = order.get("created_time", "")
 
-            # Convert timestamp to readable format
-            if timestamp:
-                dt = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
-                time_str = dt.strftime('%H:%M:%S')
+            # Parse ISO timestamp to readable format
+            if created_time:
+                try:
+                    dt = datetime.fromisoformat(created_time.replace('Z', '+00:00'))
+                    time_str = dt.strftime('%H:%M:%S')
+                except:
+                    time_str = "N/A"
             else:
                 time_str = "N/A"
 
             status = order.get("status", "unknown")
-            side = order.get("side", "N/A")
+            outcome_side = order.get("outcome_side") or order.get("side", "N/A")
             action = order.get("action", "N/A")
-            pnl = self.format_cents_to_currency(order.get("pnl_cents", 0))
+            fill_cost = order.get("taker_fill_cost_dollars", "0.00")
 
-            line = f"{time_str} | {ticker:20} | {action} {side:3} | Status: {status:10} | PnL: {pnl}"
+            line = f"{time_str} | {ticker:20} | {action} {outcome_side:3} | {status:10} | Cost: {fill_cost:>8}"
             formatted.append(line)
 
-        return formatted if formatted else ["No recent events"]
+        return "\n".join(formatted) if formatted else "No recent events"
 
     def create_window(self):
         """Create the GUI window."""
