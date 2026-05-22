@@ -38,6 +38,10 @@ class RealDataDashboard:
         self.running = True
         self.refresh_interval = 15  # seconds
 
+        # Trading mode: 'paper' or 'live'
+        self.trading_mode = os.getenv('TRADING_MODE', 'paper').lower()
+        logger.info(f"Dashboard initialized in {self.trading_mode.upper()} mode")
+
         # Initialize Kalshi API client
         self.kalshi_client = None
         self.init_kalshi_client()
@@ -46,6 +50,7 @@ class RealDataDashboard:
         self.portfolio_data = {}
         self.positions_data = []
         self.orders_data = []
+        self.weather_data = {}  # Store weather predictions
         self.api_health = {
             "kalshi": False,
             "open_meteo": False
@@ -196,6 +201,17 @@ class RealDataDashboard:
             "max_drawdown": "N/A"  # Would need equity curve
         }
 
+    def get_weather_summary(self) -> Dict:
+        """Get trading mode and weather engine status."""
+        mode_indicator = "🔴 LIVE TRADING" if self.trading_mode == 'live' else "🟡 PAPER TRADING"
+        engine_status = "🟢 RUNNING" if getattr(self, '_engine_running', False) else "⏹️ OFFLINE"
+
+        return {
+            "mode": mode_indicator,
+            "engine": engine_status,
+            "status": f"Active markets monitoring" if self.weather_data else "Awaiting engine..."
+        }
+
     def get_system_status(self) -> Dict[str, str]:
         """Get system status."""
         return {
@@ -256,7 +272,7 @@ class RealDataDashboard:
             info_text = f"{ticker:25} | {side:4} | {quantity:6.2f} contracts | Exposure: ${exposure:>8} | PnL: ${realized_pnl:>8}"
 
             row = [
-                sg.Text(info_text, font=('Helvetica', 9), text_color='#FFFFFF', background_color='#000000'),
+                sg.Text(info_text, font=('Helvetica', 14, 'bold'), text_color='#FFFFFF', background_color='#000000'),
                 sg.Button('CLOSE', key=close_key,
                           button_color=('#FFFFFF', '#f44336'),
                           size=(8, 1),
@@ -353,6 +369,7 @@ class RealDataDashboard:
         portfolio = self.get_portfolio_summary()
         performance = self.get_performance_metrics()
         status = self.get_system_status()
+        weather = self.get_weather_summary()
         positions_list = self.format_positions()
         events_list = self.format_recent_events()
 
@@ -378,6 +395,18 @@ class RealDataDashboard:
             ]), sg.Column([
                 [sg.Text("Sharpe Ratio:", font=('Helvetica', 10)), sg.Text(performance["sharpe"], key="-SHARPE-", font=('Helvetica', 10, 'bold'))],
                 [sg.Text("Max Drawdown:", font=('Helvetica', 10)), sg.Text(performance["max_drawdown"], key="-DRAWDOWN-", font=('Helvetica', 10, 'bold'))],
+            ])],
+            [sg.HSeparator()],
+        ]
+
+        # Trading Mode Section
+        mode_layout = [
+            [sg.Text("⚙️ TRADING MODE & ENGINE", font=('Helvetica', 14, 'bold'))],
+            [sg.Column([
+                [sg.Text(f"{weather['mode']}", key="-MODE-", font=('Helvetica', 12, 'bold'))],
+                [sg.Text(f"Trading Engine: {weather['engine']}", key="-ENGINE-", font=('Helvetica', 10))],
+            ]), sg.Column([
+                [sg.Text(f"Status: {weather['status']}", key="-WEATHER-STATUS-", font=('Helvetica', 10))],
             ])],
             [sg.HSeparator()],
         ]
@@ -436,6 +465,7 @@ class RealDataDashboard:
             [sg.Text("🤖 WEATHERBOT DASHBOARD", font=('Helvetica', 18, 'bold'), text_color='#2196F3')],
             [sg.Text(f"Last Updated: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}", key="-TIMESTAMP-", font=('Helvetica', 9))],
             [sg.HSeparator()],
+            *mode_layout,
             *portfolio_layout,
             *performance_layout,
             *status_layout,
