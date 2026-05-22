@@ -53,11 +53,16 @@ if [ -f "$LOG_FILE" ]; then
     echo -e "${BLUE}┌─ TRADING STATISTICS ─────────────────────────────────────────┐${NC}"
 
     # Count metrics
-    TOTAL_SCANS=$(grep -c "Qualified.*markets" "$LOG_FILE" 2>/dev/null || echo "0")
-    SIGNALS=$(grep -c "✓ Signal generated" "$LOG_FILE" 2>/dev/null || echo "0")
-    VALIDATED=$(grep -c "Validated.*trades" "$LOG_FILE" 2>/dev/null || echo "0")
-    EXECUTED=$(grep -c "execution complete" "$LOG_FILE" 2>/dev/null || echo "0")
-    REJECTED=$(grep -c "Rejected" "$LOG_FILE" 2>/dev/null || echo "0")
+    TOTAL_SCANS=$(grep -c "Qualified.*markets" "$LOG_FILE" 2>/dev/null)
+    TOTAL_SCANS=${TOTAL_SCANS:-0}
+    SIGNALS=$(grep -c "✓ Signal generated" "$LOG_FILE" 2>/dev/null)
+    SIGNALS=${SIGNALS:-0}
+    VALIDATED=$(grep -c "Validated.*trades" "$LOG_FILE" 2>/dev/null)
+    VALIDATED=${VALIDATED:-0}
+    EXECUTED=$(grep -c "execution complete" "$LOG_FILE" 2>/dev/null)
+    EXECUTED=${EXECUTED:-0}
+    REJECTED=$(grep -c "Rejected" "$LOG_FILE" 2>/dev/null)
+    REJECTED=${REJECTED:-0}
 
     echo "  Market Scans: $TOTAL_SCANS"
     echo "  Signals Generated: $SIGNALS"
@@ -109,7 +114,8 @@ if [ -f "$LOG_FILE" ]; then
     echo ""
 
     # Error summary
-    ERROR_COUNT=$(grep -c "ERROR\|FAILED\|Exception" "$LOG_FILE" 2>/dev/null || echo "0")
+    ERROR_COUNT=$(grep -c "ERROR\|FAILED\|Exception" "$LOG_FILE" 2>/dev/null)
+    ERROR_COUNT=${ERROR_COUNT:-0}
     if [ "$ERROR_COUNT" -gt 0 ]; then
         echo -e "${YELLOW}⚠️  WARNINGS/ERRORS: $ERROR_COUNT${NC}"
         echo "  Recent errors:"
