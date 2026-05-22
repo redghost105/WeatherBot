@@ -233,26 +233,50 @@ class RealDataDashboard:
             for city, config in cities_config.items():
                 try:
                     weather_data = agg.get_complete_weather_data(
-                        lat=config['lat'],
-                        lon=config['lon'],
-                        name=city,
+                        latitude=config['lat'],
+                        longitude=config['lon'],
+                        location_name=city,
                         forecast_days=1,
                         station_code=config['station']
                     )
 
-                    if weather_data and weather_data.daily_forecast:
+                    if not weather_data:
+                        forecasts[city] = f"{city}: --°F"
+                        continue
+
+                    # Try daily forecast first
+                    if weather_data.daily_forecast and len(weather_data.daily_forecast) > 0:
                         forecast = weather_data.daily_forecast[0]
                         temp = forecast.temperature
                         temp_max = forecast.temperature_max
-                        forecasts[city] = f"{city}: {temp}°F (max {temp_max}°F)"
+
+                        # Convert Celsius to Fahrenheit if needed
+                        if temp is not None and temp < 50:  # Likely Celsius if < 50
+                            temp = (temp * 9/5) + 32
+                        if temp_max is not None and temp_max < 50:
+                            temp_max = (temp_max * 9/5) + 32
+
+                        if temp is not None and temp_max is not None:
+                            forecasts[city] = f"{city}: {temp:.0f}°F (max {temp_max:.0f}°F)"
+                        elif temp is not None:
+                            forecasts[city] = f"{city}: {temp:.0f}°F"
+                        else:
+                            forecasts[city] = f"{city}: --°F"
+                    # Fallback to current conditions
+                    elif weather_data.current and weather_data.current.temperature is not None:
+                        temp = weather_data.current.temperature
+                        # Convert Celsius to Fahrenheit if needed
+                        if temp < 50:
+                            temp = (temp * 9/5) + 32
+                        forecasts[city] = f"{city}: {temp:.0f}°F (current)"
                     else:
-                        forecasts[city] = f"{city}: Data unavailable"
+                        forecasts[city] = f"{city}: --°F"
 
                 except Exception as e:
-                    logger.debug(f"Failed to fetch weather for {city}: {e}")
-                    forecasts[city] = f"{city}: Error fetching data"
+                    logger.warning(f"Failed to fetch weather for {city}: {e}")
+                    forecasts[city] = f"{city}: --°F"
 
-            return forecasts
+            return forecasts if forecasts else {"Status": "--°F"}
 
         except ImportError:
             logger.warning("WeatherAggregator not available")
