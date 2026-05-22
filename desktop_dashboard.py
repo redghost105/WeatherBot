@@ -212,6 +212,74 @@ class RealDataDashboard:
             "status": f"Active markets monitoring" if self.weather_data else "Awaiting engine..."
         }
 
+    def fetch_weather_forecasts(self) -> Dict[str, str]:
+        """Fetch weather forecasts for configured cities."""
+        try:
+            from weather_aggregator import WeatherAggregator
+
+            agg = WeatherAggregator(cache_ttl_minutes=30)
+
+            # NYC coordinates and other major cities
+            cities_config = {
+                'NYC': {'lat': 40.7128, 'lon': -74.0060, 'station': 'KNYC'},
+                'Chicago': {'lat': 41.8781, 'lon': -87.6298, 'station': 'KMDW'},
+                'Dallas': {'lat': 32.7767, 'lon': -96.7970, 'station': 'KDFW'},
+                'Denver': {'lat': 39.7392, 'lon': -104.9903, 'station': 'KDEN'},
+                'LA': {'lat': 34.0522, 'lon': -118.2437, 'station': 'KLAX'},
+            }
+
+            forecasts = {}
+
+            for city, config in cities_config.items():
+                try:
+                    weather_data = agg.get_complete_weather_data(
+                        lat=config['lat'],
+                        lon=config['lon'],
+                        name=city,
+                        forecast_days=1,
+                        station_code=config['station']
+                    )
+
+                    if weather_data and weather_data.daily_forecast:
+                        forecast = weather_data.daily_forecast[0]
+                        temp = forecast.temperature
+                        temp_max = forecast.temperature_max
+                        forecasts[city] = f"{city}: {temp}°F (max {temp_max}°F)"
+                    else:
+                        forecasts[city] = f"{city}: Data unavailable"
+
+                except Exception as e:
+                    logger.debug(f"Failed to fetch weather for {city}: {e}")
+                    forecasts[city] = f"{city}: Error fetching data"
+
+            return forecasts
+
+        except ImportError:
+            logger.warning("WeatherAggregator not available")
+            return {
+                "NYC": "NYC: Data loading...",
+                "Chicago": "Chicago: Data loading...",
+                "Dallas": "Dallas: Data loading...",
+            }
+        except Exception as e:
+            logger.error(f"Error fetching weather forecasts: {e}")
+            return {"Status": "Unable to fetch weather data"}
+
+    def build_weather_layout(self) -> List:
+        """Build weather forecast display layout."""
+        forecasts = self.fetch_weather_forecasts()
+        weather_rows = []
+
+        for city, forecast in list(forecasts.items())[:5]:  # Show up to 5 cities
+            weather_rows.append(
+                [sg.Text(forecast, font=('Helvetica', 10), text_color='#2196F3', background_color='#000000')]
+            )
+
+        if not weather_rows:
+            weather_rows = [[sg.Text("No weather data available", text_color='#888888', background_color='#000000')]]
+
+        return weather_rows
+
     def get_system_status(self) -> Dict[str, str]:
         """Get system status."""
         return {
@@ -370,6 +438,7 @@ class RealDataDashboard:
         performance = self.get_performance_metrics()
         status = self.get_system_status()
         weather = self.get_weather_summary()
+        weather_forecasts = self.build_weather_layout()
         positions_list = self.format_positions()
         events_list = self.format_recent_events()
 
@@ -414,6 +483,19 @@ class RealDataDashboard:
                            button_color=('#FFFFFF', '#4CAF50' if not getattr(self, '_engine_running', False) else '#FF5722'),
                            size=(15, 1))],
             ])],
+            [sg.HSeparator()],
+        ]
+
+        # Weather Forecast Section
+        weather_layout = [
+            [sg.Text("🌤️ WEATHER FORECASTS (REAL DATA)", font=('Helvetica', 14, 'bold'))],
+            [sg.Column(
+                weather_forecasts,
+                scrollable=True,
+                vertical_scroll_only=True,
+                size=(1150, 120),
+                key='-WEATHER-COL-'
+            )],
             [sg.HSeparator()],
         ]
 
@@ -472,6 +554,7 @@ class RealDataDashboard:
             [sg.Text(f"Last Updated: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}", key="-TIMESTAMP-", font=('Helvetica', 9))],
             [sg.HSeparator()],
             *mode_layout,
+            *weather_layout,
             *portfolio_layout,
             *performance_layout,
             *status_layout,
