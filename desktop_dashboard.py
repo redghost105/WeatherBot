@@ -232,7 +232,7 @@ class RealDataDashboard:
             return False
 
     def build_positions_layout(self) -> List:
-        """Build scrollable position boxes layout."""
+        """Build scrollable position boxes layout - single line per position."""
         self._position_close_map = {}
         position_frames = []
 
@@ -252,31 +252,25 @@ class RealDataDashboard:
             close_key = f'-CLOSE-{idx}-'
             self._position_close_map[close_key] = (ticker, side, quantity)
 
-            frame_content = [
-                [sg.Text(f"{ticker}", font=('Helvetica', 11, 'bold'), text_color='#4CAF50')],
-                [sg.Text(f"Side: {side}", font=('Helvetica', 9), text_color='#2196F3')],
-                [sg.Text(f"Contracts: {quantity:.2f}", font=('Helvetica', 9))],
-                [sg.Text(f"Exposure: ${exposure}", font=('Helvetica', 9))],
-                [sg.Text(f"PnL: ${realized_pnl}", font=('Helvetica', 9), text_color='#4CAF50')],
-            ]
+            # All info on one line, no frame border
+            info_text = f"{ticker:25} | {side:4} | {quantity:6.2f} contracts | Exposure: ${exposure:>8} | PnL: ${realized_pnl:>8}"
 
             row = [
-                sg.Frame('', frame_content, relief=sg.RELIEF_SOLID, border_width=2,
-                         element_justification='left', background_color='#1A1A1A'),
+                sg.Text(info_text, font=('Helvetica', 9), text_color='#FFFFFF', background_color='#000000'),
                 sg.Button('CLOSE', key=close_key,
                           button_color=('#FFFFFF', '#f44336'),
-                          size=(8, 3),
+                          size=(8, 1),
                           tooltip=f'Market sell to close {ticker} {side}')
             ]
             position_frames.append(row)
 
         if not position_frames:
-            position_frames = [[sg.Text("No open positions", text_color='#888888')]]
+            position_frames = [[sg.Text("No open positions", text_color='#888888', background_color='#000000')]]
 
         return position_frames
 
     def build_events_layout(self) -> List:
-        """Build scrollable event boxes layout (vertical)."""
+        """Build scrollable event boxes layout (vertical, single line per event)."""
         event_frames = []
 
         for idx, order in enumerate(self.orders_data[:10]):
@@ -299,21 +293,15 @@ class RealDataDashboard:
 
             status_color = '#4CAF50' if status == 'executed' else '#FF9800' if status == 'resting' else '#888888'
 
-            frame_content = [
-                [sg.Text(ticker, font=('Helvetica', 9, 'bold'), text_color='#4CAF50')],
-                [sg.Text(f"{action} {outcome_side}", font=('Helvetica', 9), text_color='#2196F3')],
-                [sg.Text(f"Status: {status}", font=('Helvetica', 9), text_color=status_color)],
-                [sg.Text(f"Cost: ${fill_cost}", font=('Helvetica', 9))],
-                [sg.Text(f"Time: {time_str}", font=('Helvetica', 9), text_color='#888888')],
-            ]
+            # All info on one line, no frame border
+            info_text = f"{ticker:25} | {action:4} {outcome_side:3} | Status: {status:10} | Cost: ${fill_cost:>8} | {time_str}"
 
             event_frames.append(
-                [sg.Frame('', frame_content, relief=sg.RELIEF_SOLID, border_width=2,
-                          element_justification='left', background_color='#1A1A1A')]
+                [sg.Text(info_text, font=('Helvetica', 9), text_color='#FFFFFF', background_color='#000000')]
             )
 
         if not event_frames:
-            event_frames = [[sg.Text("No recent events", text_color='#888888')]]
+            event_frames = [[sg.Text("No recent events", text_color='#888888', background_color='#000000')]]
 
         return event_frames
 
@@ -524,11 +512,10 @@ class RealDataDashboard:
         while True:
             event, values = window.read(timeout=500)
 
-            # Auto-refresh every 15 seconds
+            # Auto-refresh every 15 seconds (update data only, don't rebuild)
             if time.time() - last_refresh >= self.refresh_interval:
-                window = self._rebuild_window(window)
+                self.refresh_all_data()
                 last_refresh = time.time()
-                continue
 
             # Handle window close or EXIT button
             if event == sg.WINDOW_CLOSED or event == "-EXIT-":
@@ -553,7 +540,7 @@ class RealDataDashboard:
                 self.running = True
                 print("Trading resumed")
 
-            # Handle manual refresh
+            # Handle manual refresh (full rebuild)
             elif event == "-REFRESH-":
                 window = self._rebuild_window(window)
                 last_refresh = time.time()
