@@ -407,6 +407,12 @@ class RealDataDashboard:
                 [sg.Text(f"Trading Engine: {weather['engine']}", key="-ENGINE-", font=('Helvetica', 10))],
             ]), sg.Column([
                 [sg.Text(f"Status: {weather['status']}", key="-WEATHER-STATUS-", font=('Helvetica', 10))],
+            ]), sg.Column([
+                [sg.Button("🔄 TOGGLE MODE", key="-TOGGLE-MODE-", button_color=('#FFFFFF', '#9C27B0'), size=(15, 1))],
+                [sg.Button("⚡ START ENGINE" if not getattr(self, '_engine_running', False) else "⛔ STOP ENGINE",
+                           key="-TOGGLE-ENGINE-",
+                           button_color=('#FFFFFF', '#4CAF50' if not getattr(self, '_engine_running', False) else '#FF5722'),
+                           size=(15, 1))],
             ])],
             [sg.HSeparator()],
         ]
@@ -460,8 +466,8 @@ class RealDataDashboard:
             ]
         ]
 
-        # Main Layout
-        layout = [
+        # Main Layout - Scrollable Content
+        content_layout = [
             [sg.Text("🤖 WEATHERBOT DASHBOARD", font=('Helvetica', 18, 'bold'), text_color='#2196F3')],
             [sg.Text(f"Last Updated: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}", key="-TIMESTAMP-", font=('Helvetica', 9))],
             [sg.HSeparator()],
@@ -472,6 +478,17 @@ class RealDataDashboard:
             *positions_layout,
             *events_layout,
             *controls_layout,
+        ]
+
+        # Wrap in scrollable column for global scrolling
+        layout = [
+            [sg.Column(
+                content_layout,
+                scrollable=True,
+                vertical_scroll_only=True,
+                size=(1190, 850),
+                key='-MAIN-SCROLL-'
+            )]
         ]
 
         # Create Window
@@ -560,6 +577,34 @@ class RealDataDashboard:
                 if success:
                     window = self._rebuild_window(window)
                     last_refresh = time.time()
+
+            # Handle trading mode toggle
+            elif event == "-TOGGLE-MODE-":
+                old_mode = self.trading_mode
+                self.trading_mode = 'live' if self.trading_mode == 'paper' else 'paper'
+                os.environ['TRADING_MODE'] = self.trading_mode
+                msg = f"Switched to {self.trading_mode.upper()} trading"
+                sg.popup_quick_message(msg, auto_close_duration=2, keep_on_top=True)
+                print(f"✓ {msg}")
+                window = self._rebuild_window(window)
+                last_refresh = time.time()
+
+            # Handle trading engine toggle
+            elif event == "-TOGGLE-ENGINE-":
+                engine_running = getattr(self, '_engine_running', False)
+                if not engine_running:
+                    # Start engine
+                    self._engine_running = True
+                    msg = "Trading engine STARTED (paper mode simulation)"
+                    print(f"✓ {msg}")
+                else:
+                    # Stop engine
+                    self._engine_running = False
+                    msg = "Trading engine STOPPED"
+                    print(f"✓ {msg}")
+                sg.popup_quick_message(msg, auto_close_duration=2, keep_on_top=True)
+                window = self._rebuild_window(window)
+                last_refresh = time.time()
 
             # Handle pause/resume
             elif event == "-PAUSE-":
