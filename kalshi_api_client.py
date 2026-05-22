@@ -319,20 +319,24 @@ class KalshiAPIClient:
         Get current portfolio balance and positions.
 
         Returns:
-            Portfolio object with balance (in cents)
+            Portfolio object with balance (in cents), balance_dollars, portfolio_value
         """
         response = self._request("GET", "/portfolio/balance")
-        return response.get("portfolio", {})
+        # Response has keys: balance, balance_dollars, balance_breakdown, portfolio_value, updated_ts
+        return response
 
     def get_positions(self) -> List[Dict]:
         """
         Get current market positions.
 
         Returns:
-            List of position objects
+            List of position objects (combines market_positions and event_positions)
         """
         response = self._request("GET", "/portfolio/positions")
-        return response.get("positions", [])
+        # Response has keys: cursor, market_positions, event_positions
+        market_pos = response.get("market_positions", [])
+        event_pos = response.get("event_positions", [])
+        return market_pos + event_pos
 
     def get_account(self) -> Dict:
         """

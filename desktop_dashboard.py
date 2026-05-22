@@ -142,14 +142,24 @@ class RealDataDashboard:
                 "open_positions": "0"
             }
 
-        balance_cents = self.portfolio_data.get("balance", 0)
-        portfolio_value_cents = self.portfolio_data.get("portfolio_value", balance_cents)
+        # Kalshi API response structure:
+        # - balance: available cash (in cents)
+        # - portfolio_value: value of open positions (in cents)
+        # - balance_dollars: available cash as string (e.g., "10.0000")
 
-        total_pnl_cents = portfolio_value_cents - balance_cents
+        available_cents = self.portfolio_data.get("balance", 0)  # Cash available
+        open_positions_value_cents = self.portfolio_data.get("portfolio_value", 0)  # Value of open positions
+
+        # Total capital = available cash + open position values
+        total_capital_cents = available_cents + open_positions_value_cents
+
+        # PnL is calculated from position changes (would need historical tracking)
+        # For now, use unrealized PnL from positions if available
+        total_pnl_cents = open_positions_value_cents
 
         return {
-            "total_capital": self.format_cents_to_currency(portfolio_value_cents),
-            "available": self.format_cents_to_currency(balance_cents),
+            "total_capital": self.format_cents_to_currency(total_capital_cents),
+            "available": self.format_cents_to_currency(available_cents),
             "daily_pnl": self.format_cents_to_currency(total_pnl_cents),
             "total_pnl": self.format_cents_to_currency(total_pnl_cents),
             "open_positions": str(len(self.positions_data))
