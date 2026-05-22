@@ -425,6 +425,21 @@ class WeatherPredictor:
                 'reasoning': f"Forecast mean: {forecast_mean:.1f}°, bias-adjusted: {adjusted_mean:.1f}°, method: {method}"
             }
 
+        # Structured audit logging for full traceability
+        audit = {
+            "station_id": station_id,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "method": method,
+            "forecast_mean": round(forecast_mean, 2),
+            "bias_applied": round(bias_correction, 3),
+            "adjusted_mean": round(adjusted_mean, 2),
+            "ensemble_count": len(weather_data.ensemble_forecast) if weather_data.ensemble_forecast else 0,
+            "confidence": round(confidence, 3),
+            "prob_sum": round(sum(d['probability'] for d in result.values()), 5),
+            "n_buckets": len(result)
+        }
+        logger.info(f"AUDIT|{json.dumps(audit)}")
+
         logger.info(f"Calculated {len(result)} bucket probabilities using {method} (confidence: {confidence:.2%})")
         return result
 
