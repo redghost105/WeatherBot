@@ -353,11 +353,10 @@ class KalshiAPIClient:
         ticker: str,
         action: str,
         side: str,
-        type_: str,
         count: int,
         price: Optional[int] = None,
         client_order_id: Optional[str] = None,
-        time_in_force: str = "day",
+        time_in_force: str = "good_till_canceled",
         expiration_ts: Optional[int] = None
     ) -> Dict:
         """
@@ -367,12 +366,11 @@ class KalshiAPIClient:
             ticker: Market ticker (e.g., "KXHIGHNY-26MAY21-T75")
             action: "buy" or "sell"
             side: "yes" or "no"
-            type_: "limit" or "market"
             count: Number of contracts
-            price: Price in cents (1-99) for limit orders
+            price: Price in cents (1-99) for limit orders. If None, places market order.
             client_order_id: UUID string for idempotency (max 64 chars)
-            time_in_force: "day", "good_till_canceled", etc.
-            expiration_ts: Unix timestamp for GTD orders
+            time_in_force: "good_till_canceled", "fill_or_kill", or "immediate_or_cancel"
+            expiration_ts: Unix timestamp for expiration (only used with good_till_canceled)
 
         Returns:
             Order object with order_id, status, created_ts_ms, leaves_qty
@@ -381,13 +379,12 @@ class KalshiAPIClient:
             "ticker": ticker,
             "action": action,
             "side": side,
-            "type": type_,
             "count": count,
             "time_in_force": time_in_force,
         }
 
         if price is not None:
-            # Determine which price field based on side
+            # Limit order: specify price in cents (1-99)
             if side == "yes":
                 data["yes_price"] = price
             else:

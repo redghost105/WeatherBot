@@ -371,11 +371,10 @@ class ExecutionService:
                     ticker=order.ticker,
                     action=order.action,
                     side=order.side,
-                    type_="limit",
                     count=order.count,
                     price=order.yes_price or order.no_price,
                     client_order_id=order.client_order_id,
-                    time_in_force="day",
+                    time_in_force="good_till_canceled",
                 )
 
                 if not api_order:
