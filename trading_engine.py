@@ -1,16 +1,22 @@
 """
-Phase 12: Automated Trading Engine
+Phase 12: Automated Trading Engine (Refactored with Modular Components)
 
 Background process that continuously:
-1. Scans Kalshi for active weather markets
-2. Pulls fresh weather data from stations
-3. Generates trade signals via WeatherPredictor
-4. Validates trades with RiskManager
-5. Executes orders (paper or live mode)
-6. Learns from resolutions
+1. Scans Kalshi for active weather markets (scan_markets)
+2. Parses market data and extracts buckets (market_parser module)
+3. Generates trade signals via WeatherPredictor (signal_generator module)
+4. Validates trades with RiskManager (validate_trades)
+5. Executes orders (paper or live mode) (execution_service)
+6. Learns from resolutions (resolution_learner module)
 
 Runs independently from dashboard - can be started/stopped separately.
 Implements the systematic misprice-exploitation strategy from the article.
+
+MODULAR ARCHITECTURE:
+- market_parser.py: Market title parsing and bucket extraction
+- signal_generator.py: Signal generation with edge detection
+- resolution_learner.py: Resolution processing and bias learning
+- trading_engine.py: Orchestration, scanning, risk validation, execution
 """
 
 import os
@@ -36,35 +42,27 @@ logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 load_dotenv()
 
-# City configuration with exact station codes
-CITIES_KALSHI = {
-    'NYC': {'lat': 40.7128, 'lon': -74.0060, 'code': 'KNYC'},
-    'Chicago': {'lat': 41.8781, 'lon': -87.6298, 'code': 'KMDW'},
-    'Dallas': {'lat': 32.7767, 'lon': -96.7970, 'code': 'KDFW'},
-    'Denver': {'lat': 39.7392, 'lon': -104.9903, 'code': 'KDEN'},
-    'LA': {'lat': 34.0522, 'lon': -118.2437, 'code': 'KLAX'},
-}
+# Import modular components
+from signal_generator import SignalGenerator, TradeSignal
+from resolution_learner import ResolutionLearner
+from market_parser import CITIES_KALSHI
 
-@dataclass
-class TradeSignal:
-    """Structure for a single trading signal."""
-    market_ticker: str
-    station_id: str
-    city_name: str
-    target_buckets: List[str]  # e.g., ["88-89", "89-90"]
-    allocation: List[float]    # proportional allocation per bucket
-    total_notional: float
-    edge_pct: float            # edge percentage (10-15+)
-    confidence: float          # 0-100
-    reasoning: str
+# Legacy import for backward compatibility
+__all__ = ['TradingEngine', 'TradeSignal', 'CITIES_KALSHI']
 
 
 class TradingEngine:
     """
-    Core automated trading engine.
+    Core automated trading engine orchestrator.
 
     Runs as a continuous background process scanning markets,
     generating signals, validating risk, and executing trades.
+
+    Uses modular components:
+    - SignalGenerator for weather-based signals
+    - ResolutionLearner for bias learning
+    - RiskManager for risk validation
+    - ExecutionService for order placement
     """
 
     def __init__(self):
@@ -77,11 +75,20 @@ class TradingEngine:
         logger.info(f"Trading Engine initializing in {self.trading_mode.upper()} mode")
         logger.info(f"Scan interval: {self.scan_interval}s, Min edge: {self.min_edge_threshold}")
 
-        # Initialize components (order matters: client → predictor → risk_manager → execution)
+        # Initialize core dependencies (order matters: client → predictor → risk_manager → execution)
         self.init_kalshi_client()
         self.init_predictor()
         self.init_risk_manager()
         self.init_execution_service()
+
+        # Initialize modular components
+        self.signal_generator = None
+        self.resolution_learner = None
+        if self.predictor:
+            self.signal_generator = SignalGenerator(self.predictor)
+            self.resolution_learner = ResolutionLearner(self.predictor.bias_learner)
+            logger.info("✓ SignalGenerator initialized")
+            logger.info("✓ ResolutionLearner initialized")
 
         # Verify all critical components are ready
         if not self.kalshi_client:
@@ -97,6 +104,12 @@ class TradingEngine:
             'trades_failed': 0,
             'last_scan': None,
             'active_markets': 0
+        }
+
+        # Trade journal for archiving
+        self.trade_journal = {
+            'created_at': datetime.now(timezone.utc).isoformat(),
+            'trades': []
         }
 
     def init_kalshi_client(self):
@@ -220,262 +233,38 @@ class TradingEngine:
 
     def parse_market_buckets(self, market: Dict) -> Optional[Tuple[List, str]]:
         """
-        Parse market title to extract temperature buckets.
+        DEPRECATED: Use market_parser.parse_market_buckets instead.
 
-        Handles formats like:
-        - "New York Daily High Temperature 88-89°F"
-        - "NYC Low 65-66"
-        - "Chicago High Temp: 72-73F"
-
-        Returns:
-            Tuple of (List[Bucket], station_id) or None if parsing fails
+        This method is kept for backward compatibility.
+        Delegates to market_parser module.
         """
-        try:
-            from weather_predictor import Bucket, parse_bucket_string
-
-            title = market.get('title', '').upper()
-            ticker = market.get('ticker', '')
-
-            # Find which city this market is for
-            city_name = None
-            station_id = None
-            for city, config in CITIES_KALSHI.items():
-                if city.upper() in title or city in title:
-                    city_name = city
-                    station_id = config['code']
-                    break
-
-            if not station_id:
-                logger.debug(f"Could not identify city for market {ticker}: {title}")
-                return None
-
-            # Extract temperature ranges using regex
-            # Matches patterns like "88-89", "88-89°F", "88-89F", "88-89C"
-            pattern = r'(\d+)-(\d+)\s*[°]?([FC])?'
-            matches = re.findall(pattern, title)
-
-            if not matches:
-                logger.debug(f"No temperature buckets found in {title}")
-                return None
-
-            buckets = []
-            for low_str, high_str, unit in matches:
-                try:
-                    low = float(low_str)
-                    high = float(high_str)
-                    bucket = Bucket(low=low, high=high, label=f"{int(low)}-{int(high)}")
-                    buckets.append(bucket)
-                except Exception as e:
-                    logger.debug(f"Failed to parse bucket {low_str}-{high_str}: {e}")
-                    continue
-
-            if not buckets:
-                return None
-
-            logger.debug(f"Parsed {len(buckets)} buckets for {city_name} ({station_id}): {[b.label for b in buckets]}")
-            return buckets, station_id
-
-        except Exception as e:
-            logger.debug(f"Market parsing failed for {market.get('ticker')}: {e}")
-            return None
+        from market_parser import parse_market_buckets as _parse_buckets
+        return _parse_buckets(market)
 
     def generate_signals(self, markets: List[Dict]) -> List[TradeSignal]:
         """
-        Signal Generator: Use WeatherPredictor to create trade signals.
+        Generate trade signals from markets.
 
-        For each market:
-        1. Parse buckets from market title
-        2. Get weather data for resolution station
-        3. Generate probability distribution via hybrid method
-        4. Calculate edge vs market prices
-        5. Create signal if edge >= threshold AND confidence >= min
+        REFACTORED: Now delegates to SignalGenerator module for modularity.
+        This method maintains backward compatibility while using the new component.
+
+        Args:
+            markets: List of market dicts from Kalshi API
 
         Returns:
             List of TradeSignal objects with high-conviction opportunities
         """
-        if not self.predictor or not markets:
+        if not self.signal_generator or not markets:
             return []
 
-        signals = []
+        signals = self.signal_generator.generate_signals(
+            markets=markets,
+            kalshi_client=self.kalshi_client,
+            min_edge=self.min_edge_threshold
+        )
 
-        try:
-            from weather_aggregator import WeatherAggregator
-            agg = WeatherAggregator(cache_ttl_minutes=30)
-        except Exception as e:
-            logger.error(f"Failed to initialize WeatherAggregator: {e}")
-            return []
-
-        for market in markets:
-            try:
-                ticker = market.get('ticker')
-                title = market.get('title', '')
-
-                logger.debug(f"Generating signal for {ticker}")
-
-                # Parse market buckets and identify station
-                parsed = self.parse_market_buckets(market)
-                if not parsed:
-                    continue
-
-                buckets, station_id = parsed
-                city_name = None
-                city_config = None
-                for city, config in CITIES_KALSHI.items():
-                    if config['code'] == station_id:
-                        city_name = city
-                        city_config = config
-                        break
-
-                if not city_config:
-                    continue
-
-                # Fetch fresh weather data for the exact station
-                logger.debug(f"Fetching weather for {city_name} ({station_id})")
-                weather_data = agg.get_complete_weather_data(
-                    latitude=city_config['lat'],
-                    longitude=city_config['lon'],
-                    location_name=city_name,
-                    forecast_days=1,
-                    station_code=station_id
-                )
-
-                if not weather_data:
-                    logger.debug(f"No weather data for {city_name}")
-                    continue
-
-                # Log temperature data for future analysis
-                if weather_data.daily_forecast and len(weather_data.daily_forecast) > 0:
-                    daily = weather_data.daily_forecast[0]
-                    temp_log = {
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "station_id": station_id,
-                        "city": city_name,
-                        "temperature_actual": daily.temperature,
-                        "temperature_max": daily.temperature_max,
-                        "temperature_min": daily.temperature_min if hasattr(daily, 'temperature_min') else None,
-                    }
-                    # Add ensemble data if available
-                    if weather_data.ensemble_forecast and len(weather_data.ensemble_forecast) > 0:
-                        ensemble = weather_data.ensemble_forecast[0]
-                        temp_log.update({
-                            "ensemble_mean": ensemble.temperature_mean,
-                            "ensemble_std": ensemble.temperature_std,
-                            "ensemble_members": ensemble.ensemble_members,
-                        })
-                    logger.info(f"[TEMPERATURE] {json.dumps(temp_log)}")
-
-                # Generate probability distribution via hybrid method
-                model_probs_dict = self.predictor.hybrid_bucket_probabilities(
-                    weather_data=weather_data,
-                    buckets=buckets,
-                    station_id=station_id,
-                    apply_bias_correction=True
-                )
-
-                if not model_probs_dict:
-                    logger.debug(f"No probabilities for {city_name}")
-                    continue
-
-                # Extract model probabilities
-                model_probs = {label: d['probability'] for label, d in model_probs_dict.items()}
-
-                # Get current market prices (orderbook)
-                try:
-                    orderbook = self.kalshi_client.get_orderbook(ticker)
-                    # Convert orderbook to market-implied probabilities
-                    market_prices = {}
-                    yes_bids = orderbook.get('yes_dollars', [])
-                    no_bids = orderbook.get('no_dollars', [])
-
-                    if yes_bids and no_bids:
-                        best_yes = float(yes_bids[-1][0]) if yes_bids else 0.5
-                        best_no = float(no_bids[-1][0]) if no_bids else 0.5
-                        total = best_yes + best_no
-                        if total > 0:
-                            market_prob = best_yes / total
-                        else:
-                            market_prob = 0.5
-
-                        for bucket in buckets:
-                            market_prices[bucket.label] = market_prob
-                    else:
-                        logger.debug(f"No orderbook data for {ticker}")
-                        continue
-
-                except Exception as e:
-                    logger.debug(f"Failed to fetch orderbook for {ticker}: {e}")
-                    continue
-
-                # Calculate edges using predictor
-                edge_summary = self.predictor.calculate_edge(
-                    model_probs=model_probs,
-                    market_prices=market_prices,
-                    buckets=buckets,
-                    station_id=station_id,
-                    weather_data=weather_data,
-                    min_edge=self.min_edge_threshold
-                )
-
-                # Filter: only generate signals for high-confidence, high-edge opportunities
-                if edge_summary.confidence_score < 55:
-                    logger.debug(f"Low confidence {edge_summary.confidence_score:.0f} for {ticker}, skipping")
-                    continue
-
-                if edge_summary.overall_ev <= 0:
-                    logger.debug(f"No positive EV for {ticker}, skipping")
-                    continue
-
-                # Find adjacent bucket group with positive edge
-                target_buckets = edge_summary.top_buckets[:3] if edge_summary.top_buckets else []
-                if not target_buckets:
-                    logger.debug(f"No high-edge buckets for {ticker}")
-                    continue
-
-                # Calculate allocation proportional to edge
-                allocation = []
-                total_edge = 0
-                bucket_edges = {}
-                for edge in edge_summary.bucket_edges:
-                    if edge.label in target_buckets and edge.edge > 0:
-                        bucket_edges[edge.label] = edge.edge
-                        total_edge += edge.edge
-
-                if total_edge <= 0:
-                    continue
-
-                for bucket_label in target_buckets:
-                    alloc = bucket_edges.get(bucket_label, 0) / total_edge if total_edge > 0 else 0
-                    allocation.append(alloc)
-
-                # Estimate notional (will be refined by RiskManager)
-                portfolio_balance = self.kalshi_client.get_portfolio_balance()
-                equity = portfolio_balance.get('balance', 0) / 100  # Convert cents to dollars
-                notional = equity * 0.03  # Start with 3% sizing
-
-                # Create signal
-                signal = TradeSignal(
-                    market_ticker=ticker,
-                    station_id=station_id,
-                    city_name=city_name,
-                    target_buckets=target_buckets,
-                    allocation=allocation,
-                    total_notional=notional,
-                    edge_pct=edge_summary.overall_ev * 100,
-                    confidence=edge_summary.confidence_score,
-                    reasoning=edge_summary.reasoning
-                )
-
-                signals.append(signal)
-                logger.info(f"✓ Signal generated for {ticker}: edge={signal.edge_pct:.1f}%, confidence={signal.confidence:.0f}/100")
-
-            except Exception as e:
-                logger.error(f"Signal generation failed for {market.get('ticker')}: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
-
+        # Track stats
         self._stats['signals_generated'] = len(signals)
-        logger.info(f"Generated {len(signals)} trading signals from {len(markets)} markets")
         return signals
 
     def validate_trades(self, signals: List[TradeSignal]) -> List[TradeSignal]:
@@ -651,100 +440,28 @@ class TradingEngine:
 
     def check_resolutions(self):
         """
+        REFACTORED: Now delegates to ResolutionLearner module.
+
         Resolution & Learning Loop: Process settled markets and update bias learner.
-
-        For each resolved market:
-        1. Fetch settlement outcome from Kalshi
-        2. Retrieve actual temperature from NWS
-        3. Update HistoricalBiasLearner with forecast vs actual
-        4. Calculate PnL and archive trade record
-        5. Improve future predictions via feedback
-
         This implements continuous self-improvement based on realized outcomes.
+
+        Delegates to resolution_learner.process_resolutions() for the actual logic.
         """
-        if not self.kalshi_client or not self.predictor:
+        if not self.resolution_learner or not self.kalshi_client:
+            logger.debug("ResolutionLearner not initialized, skipping resolutions check")
             return
 
-        try:
-            # Get all settlements (resolved markets)
-            settlements = self.kalshi_client.get_settlements()
-            logger.debug(f"Found {len(settlements)} settlements to process")
+        summary = self.resolution_learner.process_resolutions(
+            kalshi_client=self.kalshi_client,
+            trade_journal=self.trade_journal
+        )
 
-            if not settlements:
-                return
-
-            for settlement in settlements:
-                try:
-                    ticker = settlement.get('market_ticker', '')
-                    outcome = settlement.get('outcome', '')  # 'yes' or 'no'
-                    pnl_dollars = settlement.get('pnl_dollars', 0)
-
-                    # Find which station this market was for
-                    station_id = None
-                    actual_temp = None
-
-                    for city, config in CITIES_KALSHI.items():
-                        if city.upper() in ticker.upper():
-                            station_id = config['code']
-                            break
-
-                    if not station_id:
-                        logger.debug(f"Could not identify station for {ticker}")
-                        continue
-
-                    # Try to extract actual temperature from settlement data
-                    # This would typically come from NWS or the settlement payload
-                    if 'temperature' in settlement:
-                        actual_temp = settlement['temperature']
-                    elif 'resolved_value' in settlement:
-                        # Try to parse from resolved value
-                        try:
-                            actual_temp = float(settlement['resolved_value'])
-                        except:
-                            pass
-
-                    if actual_temp is None:
-                        logger.debug(f"No actual temperature found for {ticker}")
-                        continue
-
-                    # We don't have the original forecast mean stored, but we can estimate
-                    # from the bucket that resolved. For now, log the outcome.
-                    logger.info(f"✓ Market settled: {ticker} | Actual: {actual_temp:.1f}°F | PnL: ${pnl_dollars:.2f}")
-
-                    # Archive the trade record (in production, write to database)
-                    record = {
-                        'timestamp': datetime.now(timezone.utc).isoformat(),
-                        'ticker': ticker,
-                        'station_id': station_id,
-                        'outcome': outcome,
-                        'actual_temperature': actual_temp,
-                        'pnl_dollars': pnl_dollars,
-                        'resolved': True
-                    }
-
-                    logger.debug(f"Archived trade record: {json.dumps(record)}")
-
-                    # Update HistoricalBiasLearner
-                    # We estimate the forecast mean from the outcome
-                    # In production, this would be stored during execution
-                    if station_id and actual_temp:
-                        # Simple heuristic: assume forecast was near the midpoint of resolved bucket
-                        forecast_estimate = actual_temp  # More sophisticated logic needed in prod
-                        self.predictor.bias_learner.update(
-                            station_id=station_id,
-                            forecast_high=forecast_estimate,
-                            actual_high=actual_temp
-                        )
-                        logger.info(f"  Updated bias for {station_id}: forecast≈{forecast_estimate:.1f}°F, actual={actual_temp:.1f}°F")
-
-                except Exception as e:
-                    logger.error(f"Failed to process settlement for {settlement.get('market_ticker')}: {e}")
-                    continue
-
-            logger.info("Resolution check completed")
-
-        except Exception as e:
-            logger.error(f"Resolution check failed: {e}")
+        if summary['processed'] > 0:
+            logger.info(
+                f"Resolution processing: {summary['processed']} settled, "
+                f"{len(summary['updated_stations'])} stations updated, "
+                f"${summary['total_pnl']:.2f} total PnL"
+            )
 
     def trading_loop(self):
         """
