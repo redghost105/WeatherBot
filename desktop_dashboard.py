@@ -97,12 +97,11 @@ class RealDataDashboard:
         """Check if Open-Meteo API is responding."""
         try:
             import requests
-            response = requests.get("https://archive-api.open-meteo.com/v1/archive", timeout=5, params={
+            # Use the same forecast endpoint that's actually being used
+            response = requests.get("https://api.open-meteo.com/v1/forecast", timeout=5, params={
                 "latitude": 40.7128,
                 "longitude": -74.0060,
-                "start_date": "2026-05-21",
-                "end_date": "2026-05-21",
-                "daily": "temperature_2m_max"
+                "current": "temperature_2m"
             })
             self.api_health["open_meteo"] = response.status_code == 200
             return self.api_health["open_meteo"]

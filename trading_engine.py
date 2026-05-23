@@ -343,6 +343,27 @@ class TradingEngine:
                     logger.debug(f"No weather data for {city_name}")
                     continue
 
+                # Log temperature data for future analysis
+                if weather_data.daily_forecast and len(weather_data.daily_forecast) > 0:
+                    daily = weather_data.daily_forecast[0]
+                    temp_log = {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "station_id": station_id,
+                        "city": city_name,
+                        "temperature_actual": daily.temperature,
+                        "temperature_max": daily.temperature_max,
+                        "temperature_min": daily.temperature_min if hasattr(daily, 'temperature_min') else None,
+                    }
+                    # Add ensemble data if available
+                    if weather_data.ensemble_forecast and len(weather_data.ensemble_forecast) > 0:
+                        ensemble = weather_data.ensemble_forecast[0]
+                        temp_log.update({
+                            "ensemble_mean": ensemble.temperature_mean,
+                            "ensemble_std": ensemble.temperature_std,
+                            "ensemble_members": ensemble.ensemble_members,
+                        })
+                    logger.info(f"[TEMPERATURE] {json.dumps(temp_log)}")
+
                 # Generate probability distribution via hybrid method
                 model_probs_dict = self.predictor.hybrid_bucket_probabilities(
                     weather_data=weather_data,

@@ -1,0 +1,200 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-canvas text-body font-body antialiased;
+}
+
+/* Typography */
+h1 {
+  @apply text-hero-display font-display font-bold;
+}
+
+h2 {
+  @apply text-display-lg font-display font-bold;
+}
+
+h3 {
+  @apply text-title-lg font-display font-semibold;
+}
+
+p {
+  @apply text-body-md;
+}
+
+/* Buttons - Primary (Yellow on Dark) */
+.btn-primary {
+  @apply px-6 py-3 rounded-md bg-primary text-on-primary font-button font-semibold transition-colors;
+}
+
+.btn-primary:hover {
+  @apply bg-primary-active;
+}
+
+.btn-primary:disabled {
+  @apply bg-primary-disabled text-muted cursor-not-allowed;
+}
+
+/* Buttons - Secondary (Dark Card) */
+.btn-secondary {
+  @apply px-6 py-3 rounded-md bg-surface-card text-on-dark font-button font-semibold transition-colors border border-hairline;
+}
+
+.btn-secondary:hover {
+  @apply bg-surface-elevated;
+}
+
+/* Buttons - Trading Up (Green) */
+.btn-trading-up {
+  @apply px-5 py-2 rounded-sm bg-trading-up text-on-dark font-button font-semibold transition-colors;
+}
+
+.btn-trading-up:hover {
+  @apply opacity-90;
+}
+
+/* Buttons - Trading Down (Red) */
+.btn-trading-down {
+  @apply px-5 py-2 rounded-sm bg-trading-down text-on-dark font-button font-semibold transition-colors;
+}
+
+.btn-trading-down:hover {
+  @apply opacity-90;
+}
+
+/* Buttons - Close/Action */
+.btn-close {
+  @apply px-4 py-2 rounded-md bg-primary text-on-primary font-button font-semibold transition-colors hover:bg-primary-active;
+}
+
+/* Cards */
+.card {
+  @apply bg-surface-card rounded-lg p-6 border border-hairline;
+}
+
+.card-elevated {
+  @apply bg-surface-elevated rounded-xl p-6 border border-hairline;
+}
+
+/* Inputs */
+input,
+textarea,
+select {
+  @apply bg-surface-card border border-hairline text-body rounded-md px-4 py-2 transition-colors;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  @apply outline-none ring-2 ring-info border-transparent;
+}
+
+input::placeholder {
+  @apply text-muted;
+}
+
+/* Tables */
+table {
+  @apply w-full border-collapse;
+}
+
+th {
+  @apply bg-surface-elevated text-muted text-sm font-semibold text-left px-4 py-2 border-b border-hairline;
+}
+
+td {
+  @apply px-4 py-2 border-b border-hairline;
+}
+
+/* Links */
+a {
+  @apply text-primary transition-colors hover:text-primary-active;
+}
+
+/* Loading Spinner */
+.spinner {
+  @apply inline-block h-4 w-4 animate-spin rounded-full border-2 border-hairline border-t-primary;
+}
+
+/* Utility Classes */
+.text-up {
+  @apply text-trading-up font-semibold;
+}
+
+.text-down {
+  @apply text-trading-down font-semibold;
+}
+
+.badge {
+  @apply inline-flex items-center rounded-full px-3 py-1 text-caption font-semibold;
+}
+
+.badge-success {
+  @apply bg-trading-up/20 text-trading-up;
+}
+
+.badge-error {
+  @apply bg-trading-down/20 text-trading-down;
+}
+
+.badge-warning {
+  @apply bg-primary/20 text-primary;
+}
+
+.badge-info {
+  @apply bg-info/20 text-info;
+}
+
+/* Scrollbar styling (dark theme) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-surface-card;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-hairline rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-muted;
+}
+
+/* Grid & Flex utilities */
+.grid-auto-fit {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.5rem;
+}
+
+.flex-center {
+  @apply flex items-center justify-center;
+}
+
+/* Animation */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-in-out;
+}
