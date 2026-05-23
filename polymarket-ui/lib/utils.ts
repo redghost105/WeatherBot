@@ -126,3 +126,91 @@ export function calculateWinRate(wins: number, total: number): number {
 export function cn(...classes: (string | undefined | false)[]): string {
   return classes.filter(Boolean).join(' ')
 }
+
+// Trading log parsing utilities
+export interface TradeExecution {
+  timestamp: string
+  ticker: string
+  buckets: string[]
+  size: number
+  mode: 'PAPER' | 'LIVE'
+}
+
+export interface SignalGenerated {
+  timestamp: string
+  ticker: string
+  edge_pct: number
+  confidence: number
+  buckets: string[]
+}
+
+export function parseTradingLogs(content: string): {
+  executions: TradeExecution[]
+  signals: SignalGenerated[]
+  restarts: number
+  lastScan: string | null
+} {
+  const lines = content.split('\n')
+  const executions: TradeExecution[] = []
+  const signals: SignalGenerated[] = []
+  let restarts = 0
+  let lastScan: string | null = null
+
+  for (const line of lines) {
+    // Count engine restarts
+    if (line.includes('Starting trading engine')) {
+      restarts++
+    }
+
+    // Parse signal generation
+    // Format: "✓ Signal generated for TICKER: edge=X.X%, confidence=Y/100"
+    const signalMatch = line.match(/Signal generated for\s+([A-Za-z0-9\-]+):\s*edge=([0-9.]+)%,\s*confidence=([0-9.]+)/)
+    if (signalMatch) {
+      const [, ticker, edgeStr, confidenceStr] = signalMatch
+      signals.push({
+        timestamp: extractTimestamp(line) || new Date().toISOString(),
+        ticker: ticker.trim(),
+        edge_pct: parseFloat(edgeStr),
+        confidence: parseFloat(confidenceStr),
+        buckets: [], // Bucket info not in this log line
+      })
+    }
+
+    // Parse trade executions
+    // Format: "Executing TICKER: buckets | size=$X.XX | PAPER/LIVE"
+    const execMatch = line.match(/Executing\s+([A-Za-z0-9\-]+):\s*([\w\-,\s]+)\s*\|\s*size=\$([0-9.]+)\s*\|\s*(PAPER|LIVE)/i)
+    if (execMatch) {
+      const [, ticker, bucketsStr, sizeStr, mode] = execMatch
+      executions.push({
+        timestamp: extractTimestamp(line) || new Date().toISOString(),
+        ticker: ticker.trim(),
+        buckets: bucketsStr.split(',').map(b => b.trim()),
+        size: parseFloat(sizeStr),
+        mode: (mode.toUpperCase() === 'LIVE' ? 'LIVE' : 'PAPER') as 'PAPER' | 'LIVE',
+      })
+    }
+
+    // Parse last scan time
+    const scanMatch = line.match(/Qualified\s+(\d+)\s+markets/)
+    if (scanMatch) {
+      lastScan = extractTimestamp(line) || new Date().toISOString()
+    }
+  }
+
+  return {
+    executions,
+    signals,
+    restarts: Math.max(0, restarts - 1), // Subtract 1 since first start isn't a restart
+    lastScan,
+  }
+}
+
+function extractTimestamp(logLine: string): string | null {
+  // Matches formats like "2026-05-22 10:47:06,882" or "2026-05-22 10:47:06"
+  const match = logLine.match(/(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/)
+  if (match) {
+    const [, year, month, day, hour, min, sec] = match
+    return new Date(`${year}-${month}-${day}T${hour}:${min}:${sec}Z`).toISOString()
+  }
+  return null
+}
