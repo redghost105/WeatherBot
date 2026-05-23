@@ -339,9 +339,9 @@ class RealDataDashboard:
             return False
 
     def build_positions_layout(self) -> List:
-        """Build scrollable position boxes layout - single line per position."""
+        """Build scrollable position boxes layout with Frame borders."""
         self._position_close_map = {}
-        position_frames = []
+        position_rows = []
 
         for idx, pos in enumerate(self.positions_data):
             ticker = pos.get('ticker', 'N/A')
@@ -359,26 +359,33 @@ class RealDataDashboard:
             close_key = f'-CLOSE-{idx}-'
             self._position_close_map[close_key] = (ticker, side, quantity)
 
-            # All info on one line, no frame border
-            info_text = f"{ticker:25} | {side:4} | {quantity:6.2f} contracts | Exposure: ${exposure:>8} | PnL: ${realized_pnl:>8}"
-
-            row = [
-                sg.Text(info_text, font=('Helvetica', 14, 'bold'), text_color='#FFFFFF', background_color='#000000'),
-                sg.Button('CLOSE', key=close_key,
-                          button_color=('#FFFFFF', '#f44336'),
-                          size=(8, 1),
-                          tooltip=f'Market sell to close {ticker} {side}')
+            # Frame with border and position details inside
+            frame_layout = [
+                [sg.Text(f"{ticker}", font=('Helvetica', 12, 'bold'), text_color='#2196F3', background_color='#1A1A1A')],
+                [sg.Text(f"Side: {side:4}  │  Contracts: {quantity:6.2f}", font=('Helvetica', 10), text_color='#FFFFFF', background_color='#1A1A1A')],
+                [sg.Text(f"Exposure: ${exposure:>10}  │  PnL: ${realized_pnl:>10}", font=('Helvetica', 10), text_color='#90EE90' if float(realized_pnl.replace('$', '')) >= 0 else '#FF6B6B', background_color='#1A1A1A')],
             ]
-            position_frames.append(row)
 
-        if not position_frames:
-            position_frames = [[sg.Text("No open positions", text_color='#888888', background_color='#000000')]]
+            frame = sg.Frame('', frame_layout, border_width=2, relief=sg.RELIEF_SOLID,
+                           element_justification='left', background_color='#1A1A1A',
+                           text_color='#FFFFFF', pad=(5, 5))
 
-        return position_frames
+            close_btn = sg.Button('CLOSE', key=close_key,
+                                 button_color=('#FFFFFF', '#f44336'),
+                                 size=(8, 3),
+                                 font=('Helvetica', 9, 'bold'),
+                                 tooltip=f'Market sell to close {ticker} {side}')
+
+            position_rows.append([frame, close_btn])
+
+        if not position_rows:
+            position_rows = [[sg.Text("No open positions", text_color='#888888', background_color='#000000')]]
+
+        return position_rows
 
     def build_events_layout(self) -> List:
-        """Build scrollable event boxes layout (vertical, single line per event)."""
-        event_frames = []
+        """Build horizontally scrollable event boxes layout."""
+        event_boxes = []
 
         for idx, order in enumerate(self.orders_data[:10]):
             ticker = order.get('ticker', 'N/A')
@@ -398,19 +405,29 @@ class RealDataDashboard:
             action = order.get('action', 'N/A').upper()
             fill_cost = order.get('taker_fill_cost_dollars', '0.00')
 
+            status_symbol = '✓' if status == 'executed' else '⏳' if status == 'resting' else '✗'
             status_color = '#4CAF50' if status == 'executed' else '#FF9800' if status == 'resting' else '#888888'
 
-            # All info on one line, no frame border
-            info_text = f"{ticker:25} | {action:4} {outcome_side:3} | Status: {status:10} | Cost: ${fill_cost:>8} | {time_str}"
+            # Individual box for each event
+            frame_layout = [
+                [sg.Text(f"{ticker}", font=('Helvetica', 11, 'bold'), text_color='#2196F3', background_color='#1A1A1A')],
+                [sg.Text(f"{action} {outcome_side}", font=('Helvetica', 10), text_color='#FFFFFF', background_color='#1A1A1A')],
+                [sg.Text(f"{status_symbol} {status}", font=('Helvetica', 9), text_color=status_color, background_color='#1A1A1A')],
+                [sg.Text(f"Cost: ${fill_cost}", font=('Helvetica', 9), text_color='#FFD700', background_color='#1A1A1A')],
+                [sg.Text(f"{time_str}", font=('Helvetica', 9), text_color='#AAAAAA', background_color='#1A1A1A')],
+            ]
 
-            event_frames.append(
-                [sg.Text(info_text, font=('Helvetica', 9), text_color='#FFFFFF', background_color='#000000')]
-            )
+            frame = sg.Frame('', frame_layout, border_width=2, relief=sg.RELIEF_SOLID,
+                           element_justification='center', background_color='#1A1A1A',
+                           text_color='#FFFFFF', pad=(5, 5))
 
-        if not event_frames:
-            event_frames = [[sg.Text("No recent events", text_color='#888888', background_color='#000000')]]
+            event_boxes.append(frame)
 
-        return event_frames
+        if not event_boxes:
+            event_boxes = [sg.Text("No recent events", text_color='#888888', background_color='#000000')]
+
+        # Return as single row (horizontal) for horizontal scrolling
+        return [event_boxes]
 
     def format_positions(self) -> List[str]:
         """Format open positions for display."""
@@ -554,8 +571,8 @@ class RealDataDashboard:
             [sg.Column(
                 self.build_events_layout(),
                 scrollable=True,
-                vertical_scroll_only=True,
-                size=(1150, 220),
+                vertical_scroll_only=False,
+                size=(1150, 160),
                 key='-EVENTS-COL-'
             )],
             [sg.HSeparator()],
@@ -619,39 +636,6 @@ class RealDataDashboard:
         if pos:
             new_window.move(*pos)
         return new_window
-
-    def update_data(self, window):
-        """Update all displayed data from Kalshi API."""
-        self.refresh_all_data()
-
-        current_time = datetime.now(timezone.utc).strftime('%H:%M:%S UTC')
-        window["-TIMESTAMP-"].update(f"Last Updated: {current_time}")
-
-        # Update portfolio
-        portfolio = self.get_portfolio_summary()
-        window["-CAPITAL-"].update(portfolio["total_capital"])
-        window["-AVAILABLE-"].update(portfolio["available"])
-        window["-DAILY-"].update(portfolio["daily_pnl"])
-        window["-TOTAL-"].update(portfolio["total_pnl"])
-
-        # Update performance
-        performance = self.get_performance_metrics()
-        window["-OPEN-"].update(performance["open_positions"])
-        window["-WINRATE-"].update(performance["win_rate"])
-        window["-SHARPE-"].update(performance["sharpe"])
-        window["-DRAWDOWN-"].update(performance["max_drawdown"])
-
-        # Update status
-        status = self.get_system_status()
-        window["-STATUS-"].update(f"Status: {status['system']}")
-        window["-KALSHI-"].update(f"Kalshi: {status['kalshi']}")
-        window["-METEO-"].update(f"Open-Meteo: {status['open_meteo']}")
-
-        # Update positions and events
-        window["-POSITIONS-"].update(self.format_positions())
-        window["-EVENTS-"].update(self.format_recent_events())
-
-        window.refresh()
 
     def run(self):
         """Run the dashboard."""
