@@ -75,6 +75,9 @@ class TradingEngine:
         logger.info(f"Trading Engine initializing in {self.trading_mode.upper()} mode")
         logger.info(f"Scan interval: {self.scan_interval}s, Min edge: {self.min_edge_threshold}")
 
+        # Set up file-based logging
+        self._setup_file_logging()
+
         # Initialize core dependencies (order matters: client → predictor → risk_manager → execution)
         self.init_kalshi_client()
         self.init_predictor()
@@ -111,6 +114,20 @@ class TradingEngine:
             'created_at': datetime.now(timezone.utc).isoformat(),
             'trades': []
         }
+
+    def _setup_file_logging(self):
+        """Set up self-contained rotating file logging."""
+        from logging.handlers import RotatingFileHandler
+        log_dir = os.path.expanduser(os.getenv('LOGS_DIR', '~/trading_logs'))
+        os.makedirs(log_dir, exist_ok=True)
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        log_path = os.path.join(log_dir, f'trading_{date_str}.log')
+        handler = RotatingFileHandler(
+            log_path, maxBytes=50 * 1024 * 1024, backupCount=30
+        )
+        handler.setFormatter(logging.Formatter('%(asctime)s [%(name)s] %(levelname)s: %(message)s'))
+        logging.getLogger().addHandler(handler)  # root logger → captures ALL module loggers
+        logger.info(f"File logging active: {log_path}")
 
     def init_kalshi_client(self):
         """Initialize Kalshi API client."""
