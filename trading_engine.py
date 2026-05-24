@@ -191,7 +191,7 @@ class TradingEngine:
 
         Filters:
         - Only configured cities (CITIES_KALSHI)
-        - Time to resolution 18-30 hours (sweet spot)
+        - Time to resolution 12-30 hours (sweet spot for Kalshi's market structure)
         - Sufficient liquidity
 
         Returns:
@@ -201,38 +201,48 @@ class TradingEngine:
             return []
 
         try:
-            # Get all open markets
-            markets = self.kalshi_client.get_markets(status='open')
-            logger.debug(f"Found {len(markets)} open markets")
+            # Series ticker patterns for weather markets
+            series_patterns = {
+                'NYC': 'KXHIGHNY',
+                'Chicago': 'KXHIGHCHI',
+                'Dallas': 'KXHIGHDFW',
+                'Denver': 'KXHIGHDEN',
+                'LA': 'KXHIGHLAX',
+            }
 
-            # Filter to weather markets
-            weather_markets = [
-                m for m in markets
-                if 'temp' in m.get('title', '').lower()
-                or 'weather' in m.get('title', '').lower()
-            ]
+            all_weather_markets = []
+
+            # Fetch markets for each city using series_ticker
+            for city_name, series_ticker in series_patterns.items():
+                try:
+                    markets = self.kalshi_client.get_markets(status='open', series_ticker=series_ticker)
+                    logger.debug(f"Found {len(markets)} {city_name} weather markets (series: {series_ticker})")
+                    all_weather_markets.extend(markets)
+                except Exception as e:
+                    logger.debug(f"Error fetching {city_name} markets: {e}")
+                    continue
 
             # Filter by time window (18-30 hours to resolution)
             qualified = []
             now = datetime.now(timezone.utc)
 
-            for market in weather_markets:
+            for market in all_weather_markets:
                 try:
-                    # Parse resolution time
-                    resolution_ts = market.get('resolution_ts')
-                    if not resolution_ts:
+                    # Parse resolution time (Kalshi uses 'close_time' field as ISO string)
+                    close_time_str = market.get('close_time')
+                    if not close_time_str:
+                        logger.debug(f"Market {market.get('ticker')} has no close_time")
                         continue
 
-                    # Convert to datetime (if in milliseconds)
-                    if resolution_ts > 10**10:
-                        resolution_dt = datetime.fromtimestamp(resolution_ts / 1000, tz=timezone.utc)
-                    else:
-                        resolution_dt = datetime.fromtimestamp(resolution_ts, tz=timezone.utc)
+                    # Parse ISO format timestamp
+                    close_dt = datetime.fromisoformat(close_time_str.replace('Z', '+00:00'))
 
-                    hours_to_resolution = (resolution_dt - now).total_seconds() / 3600
+                    hours_to_resolution = (close_dt - now).total_seconds() / 3600
 
-                    # 18-30 hour sweet spot
-                    if 18 <= hours_to_resolution <= 30:
+                    logger.debug(f"Market {market.get('ticker')}: {hours_to_resolution:.1f}h to resolution")
+
+                    # 12-30 hour window (sweet spot for Kalshi's market structure)
+                    if 12 <= hours_to_resolution <= 30:
                         market['hours_to_resolution'] = hours_to_resolution
                         qualified.append(market)
 
@@ -241,7 +251,7 @@ class TradingEngine:
                     continue
 
             self._stats['markets_scanned'] = len(qualified)
-            logger.info(f"Qualified {len(qualified)} markets in 18-30 hour window")
+            logger.info(f"Qualified {len(qualified)} markets in 12-30 hour window (scanned {len(all_weather_markets)} weather markets)")
             return qualified
 
         except Exception as e:
