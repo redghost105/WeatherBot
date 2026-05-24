@@ -413,6 +413,48 @@
       "forecast_high": 28,
       "actual_high": 27,
       "bias": 1
+    },
+    {
+      "date": "2026-05-23T16:30:41.062475+00:00",
+      "forecast_high": 88.5,
+      "actual_high": 88.5,
+      "bias": 0.0
+    },
+    {
+      "date": "2026-05-23T16:30:50.085556+00:00",
+      "forecast_high": 88.5,
+      "actual_high": 88.5,
+      "bias": 0.0
+    },
+    {
+      "date": "2026-05-23T16:31:23.248022+00:00",
+      "forecast_high": 88.5,
+      "actual_high": 88.5,
+      "bias": 0.0
+    },
+    {
+      "date": "2026-05-23T16:35:12.652809+00:00",
+      "forecast_high": 88.5,
+      "actual_high": 88.5,
+      "bias": 0.0
+    },
+    {
+      "date": "2026-05-23T16:35:30.773041+00:00",
+      "forecast_high": 88,
+      "actual_high": 87,
+      "bias": 1
+    },
+    {
+      "date": "2026-05-23T16:35:30.773952+00:00",
+      "forecast_high": 85,
+      "actual_high": 84,
+      "bias": 1
+    },
+    {
+      "date": "2026-05-23T16:35:30.777658+00:00",
+      "forecast_high": 90,
+      "actual_high": 89,
+      "bias": 1
     }
   ],
   "KXHIGHNY": [

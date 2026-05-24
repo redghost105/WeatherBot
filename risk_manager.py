@@ -139,11 +139,11 @@ class RiskManager:
     """
 
     # Default configuration (can be overridden)
-    DEFAULT_GLOBAL_EXPOSURE_PCT = 0.25      # 25% of equity max
-    DEFAULT_PER_CITY_EXPOSURE_PCT = 0.10    # 10% of equity max
-    DEFAULT_SINGLE_TRADE_SIZE_PCT = 0.04    # 4% of equity max
-    DEFAULT_SOFT_LOSS_THRESHOLD_PCT = -0.05 # -5% soft pause
-    DEFAULT_HARD_LOSS_THRESHOLD_PCT = -0.08 # -8% hard pause
+    DEFAULT_GLOBAL_EXPOSURE_PCT = 0.20      # 20% of equity max (was 25%)
+    DEFAULT_PER_CITY_EXPOSURE_PCT = 0.075   # 7.5% of equity max (was 10%)
+    DEFAULT_SINGLE_TRADE_SIZE_PCT = 0.035   # 3.5% of equity max (was 4%)
+    DEFAULT_SOFT_LOSS_THRESHOLD_PCT = -0.055 # -5.5% soft pause (was -5%)
+    DEFAULT_HARD_LOSS_THRESHOLD_PCT = -0.08 # -8% hard pause (unchanged)
     DEFAULT_CLUSTER_CORRELATION_REDUCTION = 0.5  # 50% size reduction
 
     def __init__(

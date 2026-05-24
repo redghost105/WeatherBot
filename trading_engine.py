@@ -70,7 +70,7 @@ class TradingEngine:
         self.running = False
         self.scan_interval = int(os.getenv('TRADING_SCAN_INTERVAL', '300'))  # 5 minutes default
         self.trading_mode = os.getenv('TRADING_MODE', 'paper').lower()
-        self.min_edge_threshold = float(os.getenv('MIN_EDGE_THRESHOLD', '0.10'))
+        self.min_edge_threshold = float(os.getenv('MIN_EDGE_THRESHOLD', '0.11'))
 
         logger.info(f"Trading Engine initializing in {self.trading_mode.upper()} mode")
         logger.info(f"Scan interval: {self.scan_interval}s, Min edge: {self.min_edge_threshold}")
@@ -187,15 +187,18 @@ class TradingEngine:
 
     def scan_markets(self) -> List[Dict]:
         """
-        Market Scanner: Discover active Kalshi weather markets.
+        Market Scanner: Discover active Kalshi weather markets for tomorrow.
+
+        Strategy: Trade tomorrow's weather events for better forecast quality
+        and more time for edge to compound.
 
         Filters:
         - Only configured cities (CITIES_KALSHI)
-        - Time to resolution 12-30 hours (sweet spot for Kalshi's market structure)
-        - Sufficient liquidity
+        - Event occurs tomorrow (occurrence_datetime == tomorrow's date)
+        - Status is 'open'
 
         Returns:
-            List of market dicts with metadata
+            List of market dicts for tomorrow's events with metadata
         """
         if not self.kalshi_client:
             return []
@@ -222,28 +225,31 @@ class TradingEngine:
                     logger.debug(f"Error fetching {city_name} markets: {e}")
                     continue
 
-            # Filter by time window (18-30 hours to resolution)
+            # Filter to tomorrow's markets based on occurrence date
             qualified = []
             now = datetime.now(timezone.utc)
+            tomorrow = (now + timedelta(days=1)).date()
 
             for market in all_weather_markets:
                 try:
-                    # Parse resolution time (Kalshi uses 'close_time' field as ISO string)
-                    close_time_str = market.get('close_time')
-                    if not close_time_str:
-                        logger.debug(f"Market {market.get('ticker')} has no close_time")
+                    # Check if event occurs tomorrow
+                    occurrence_str = market.get('occurrence_datetime')
+                    if not occurrence_str:
+                        logger.debug(f"Market {market.get('ticker')} has no occurrence_datetime")
                         continue
 
-                    # Parse ISO format timestamp
-                    close_dt = datetime.fromisoformat(close_time_str.replace('Z', '+00:00'))
+                    occurrence_dt = datetime.fromisoformat(occurrence_str.replace('Z', '+00:00'))
+                    event_date = occurrence_dt.date()
 
-                    hours_to_resolution = (close_dt - now).total_seconds() / 3600
+                    if event_date == tomorrow:
+                        # Calculate hours to close for logging
+                        close_time_str = market.get('close_time')
+                        if close_time_str:
+                            close_dt = datetime.fromisoformat(close_time_str.replace('Z', '+00:00'))
+                            hours_to_close = (close_dt - now).total_seconds() / 3600
+                            market['hours_to_resolution'] = hours_to_close
+                            logger.debug(f"Market {market.get('ticker')}: {hours_to_close:.1f}h to close")
 
-                    logger.debug(f"Market {market.get('ticker')}: {hours_to_resolution:.1f}h to resolution")
-
-                    # 12-30 hour window (sweet spot for Kalshi's market structure)
-                    if 12 <= hours_to_resolution <= 30:
-                        market['hours_to_resolution'] = hours_to_resolution
                         qualified.append(market)
 
                 except Exception as e:
@@ -251,7 +257,7 @@ class TradingEngine:
                     continue
 
             self._stats['markets_scanned'] = len(qualified)
-            logger.info(f"Qualified {len(qualified)} markets in 12-30 hour window (scanned {len(all_weather_markets)} weather markets)")
+            logger.info(f"Qualified {len(qualified)} tomorrow's markets (scanned {len(all_weather_markets)} total weather markets)")
             return qualified
 
         except Exception as e:

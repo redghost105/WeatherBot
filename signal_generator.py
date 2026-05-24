@@ -61,8 +61,8 @@ class SignalGenerator:
             predictor: Initialized WeatherPredictor with bias learner
         """
         self.predictor = predictor
-        self.min_edge_threshold = 0.10  # 10% minimum edge
-        self.min_confidence = 55.0      # 55% minimum confidence
+        self.min_edge_threshold = 0.11  # 11% minimum edge (optimized from 10%)
+        self.min_confidence = 58.0      # 58% minimum confidence (optimized from 55%)
         self.min_edge_adjacent = 0.10   # edge required on adjacent buckets
 
     def generate_signals(
