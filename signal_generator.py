@@ -99,6 +99,13 @@ class SignalGenerator:
 
         for market in markets:
             try:
+                ticker = market.get('ticker', 'UNKNOWN')
+                # Only process bucket markets (contain 'B' in ticker like KXHIGHNY-26MAY26-B78.5)
+                # Skip threshold markets (contain 'T' like KXHIGHNY-26MAY26-T84)
+                if '-B' not in ticker:
+                    logger.debug(f"Skipping non-bucket market {ticker}")
+                    continue
+
                 signal = self._generate_signal_for_market(
                     market,
                     kalshi_client,
@@ -209,13 +216,18 @@ class SignalGenerator:
             logger.debug(f"No positive EV for {ticker}, skipping")
             return None
 
-        # Step 7: Select adjacent bucket group (2-3 buckets with highest edge)
-        target_buckets = self._select_adjacent_buckets(
-            edge_summary.bucket_edges,
-            buckets
-        )
+        # Step 7: Select the single bucket containing the predicted temperature
+        predicted_temp_c = weather_data.daily_forecast[0].temperature_max if weather_data.daily_forecast else None
+        if predicted_temp_c is None:
+            logger.debug(f"No predicted temperature for {ticker}")
+            return None
+
+        # Convert Celsius to Fahrenheit (Open-Meteo returns temps in Celsius)
+        predicted_temp_f = (predicted_temp_c * 9/5) + 32
+
+        target_buckets = self._find_bucket_for_temperature(predicted_temp_f, buckets)
         if not target_buckets:
-            logger.debug(f"No high-edge buckets for {ticker}")
+            logger.debug(f"Predicted temp {predicted_temp_f:.1f}°F (from {predicted_temp_c:.1f}°C) not in any bucket for {ticker}")
             return None
 
         # Step 8: Calculate allocation proportional to edge
@@ -287,62 +299,45 @@ class SignalGenerator:
             logger.debug(f"Failed to fetch orderbook for {ticker}: {e}")
             return None
 
-    def _select_adjacent_buckets(
+    def _find_bucket_for_temperature(
         self,
-        bucket_edges: List,
+        predicted_temp: float,
         available_buckets: List[Bucket]
     ) -> List[str]:
         """
-        Select 2-3 adjacent buckets with highest edge.
+        Find the single bucket that contains the predicted temperature.
 
-        Prefers adjacent bucket spreads per successful strategies.
+        According to the strategy, only trade the bucket that matches the
+        predicted high temperature, not multiple adjacent buckets.
+
+        Args:
+            predicted_temp: The predicted maximum temperature (in Fahrenheit)
+            available_buckets: List of all available Bucket objects
+
+        Returns:
+            List with single bucket label if found, empty list otherwise
         """
-        # Sort buckets by edge, descending
-        sorted_edges = sorted(
-            bucket_edges,
-            key=lambda e: e.edge if hasattr(e, 'edge') else 0,
-            reverse=True
-        )
+        for bucket in available_buckets:
+            if bucket.contains(predicted_temp):
+                return [bucket.label]
 
-        selected = []
-        for edge_obj in sorted_edges[:5]:  # Check top 5
-            if edge_obj.recommendation != "SKIP":
-                selected.append(edge_obj.label)
-                if len(selected) >= 3:
-                    break
-
-        return selected[:3] if selected else []  # Return top 3, max
+        return []
 
     def _calculate_allocation(
         self,
         target_buckets: List[str],
         bucket_edges: List
     ) -> List[float]:
-        """Calculate proportional allocation across target buckets."""
+        """Calculate allocation across target buckets.
+
+        With the strategy of trading only the predicted temperature bucket,
+        this will always return [1.0] for a single bucket.
+        """
         if not target_buckets:
             return []
 
-        # Find edge for each target bucket
-        bucket_edges_map = {}
-        for edge_obj in bucket_edges:
-            if hasattr(edge_obj, 'label') and hasattr(edge_obj, 'edge'):
-                bucket_edges_map[edge_obj.label] = edge_obj.edge
-
-        # Calculate total edge
-        total_edge = sum(
-            bucket_edges_map.get(b, 0) for b in target_buckets
-        )
-
-        if total_edge <= 0:
-            # Equal allocation
-            alloc = 1.0 / len(target_buckets)
-            return [alloc] * len(target_buckets)
-
-        # Proportional to edge
-        return [
-            bucket_edges_map.get(b, 0) / total_edge
-            for b in target_buckets
-        ]
+        # With single-bucket strategy, allocation is always full weight on that bucket
+        return [1.0] * len(target_buckets)
 
     def _log_temperature_data(
         self,
