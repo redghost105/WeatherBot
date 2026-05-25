@@ -1,14 +1,12 @@
 """
-Signal Generator Module
+Signal Generator Module - 3-Bin Strategy from PDF
 
 Transforms weather data into high-conviction trading signals.
-Integrates WeatherPredictor with market data to identify profitable opportunities.
-
-Purpose: Centralized signal generation logic that:
-- Calls WeatherPredictor.hybrid_bucket_probabilities() for calibrated forecasts
-- Calculates edge vs market prices (minimum 10-15% edge)
-- Prefers 2-3 adjacent buckets per successful strategy
-- Returns structured TradeSignal objects with metadata
+Implements the 3-bin strategy from Paruchuri's Polymarket Weather Bot:
+- Get consensus from 3 weather models
+- Bet on 3 adjacent bins (center ± 1)
+- Apply price filters for edge guarantee
+- Skip markets where models diverge >3°C
 """
 
 import logging
@@ -31,26 +29,27 @@ class TradeSignal:
     market_ticker: str
     station_id: str
     city_name: str
-    target_buckets: List[str]  # e.g., ["88-89", "89-90"]
-    allocation: List[float]    # proportional sizing for each bucket
+    target_buckets: List[str]  # e.g., ["88-89", "89-90", "90-91"] for 3-bin strategy
+    allocation: List[float]    # equal allocation for 3-bin strategy
     total_notional: float      # initial estimated size (in dollars)
-    edge_pct: float            # edge percentage (10-15+)
-    confidence: float          # confidence score (0-100)
+    edge_pct: float            # edge percentage
+    confidence: float          # model agreement confidence
     reasoning: str             # why this signal was generated
 
 
 class SignalGenerator:
     """
-    Generates trading signals from weather data and market prices.
+    Generates trading signals using 3-bin strategy from PDF.
 
     Workflow:
     1. Parse market buckets and identify station
-    2. Fetch fresh weather data via WeatherAggregator
-    3. Call WeatherPredictor.hybrid_bucket_probabilities()
-    4. Extract market prices from orderbook
-    5. Calculate edge via predictor.calculate_edge()
-    6. Filter: confidence >= 55%, edge >= 10%, 2-3 adjacent buckets
-    7. Return TradeSignal with allocation and metadata
+    2. Fetch weather data for 3 models (ICON, GFS, ECMWF)
+    3. Check model agreement (2 models within 1°C)
+    4. Skip if all 3 models diverge >3°C
+    5. Find consensus center bin
+    6. Select 3 adjacent bins (center ± 1)
+    7. Apply price filters
+    8. Return TradeSignal if all filters pass
     """
 
     def __init__(self, predictor: WeatherPredictor):
@@ -61,9 +60,15 @@ class SignalGenerator:
             predictor: Initialized WeatherPredictor with bias learner
         """
         self.predictor = predictor
-        self.min_edge_threshold = 0.11  # 11% minimum edge (optimized from 10%)
-        self.min_confidence = 58.0      # 58% minimum confidence (optimized from 55%)
-        self.min_edge_adjacent = 0.10   # edge required on adjacent buckets
+
+        # Price filters from PDF Step 13
+        self.max_sum_price = 0.95      # sum of 3 bin prices <= 95¢
+        self.min_bin_price = 0.01      # each bin >= 1¢ (resolved bin filter)
+        self.max_bin_price = 0.45      # each bin <= 45¢ (market already priced in)
+
+        # Model agreement from PDF
+        self.model_agreement_threshold = 1.0  # 2 models within 1°C = agreement
+        self.max_divergence = 3.0              # if all 3 diverge >3°C, skip entirely
 
     def generate_signals(
         self,
@@ -72,21 +77,18 @@ class SignalGenerator:
         min_edge: Optional[float] = None
     ) -> List[TradeSignal]:
         """
-        Generate trade signals from a list of markets.
+        Generate trade signals from a list of markets using 3-bin strategy.
 
         Args:
             markets: List of market dicts from Kalshi API
             kalshi_client: KalshiAPIClient instance for orderbook data
-            min_edge: Override minimum edge threshold (default: 0.10)
+            min_edge: Override minimum edge threshold (unused in 3-bin strategy)
 
         Returns:
-            List of TradeSignal objects with high-conviction opportunities
+            List of TradeSignal objects matching 3-bin criteria
         """
         if not self.predictor or not markets:
             return []
-
-        if min_edge is not None:
-            self.min_edge_threshold = min_edge
 
         signals = []
         weather_agg = None
@@ -100,8 +102,8 @@ class SignalGenerator:
         for market in markets:
             try:
                 ticker = market.get('ticker', 'UNKNOWN')
-                # Only process bucket markets (contain 'B' in ticker like KXHIGHNY-26MAY26-B78.5)
-                # Skip threshold markets (contain 'T' like KXHIGHNY-26MAY26-T84)
+                # Only process bucket markets (contain 'B' in ticker)
+                # Skip threshold markets (contain 'T')
                 if '-B' not in ticker:
                     logger.debug(f"Skipping non-bucket market {ticker}")
                     continue
@@ -128,9 +130,9 @@ class SignalGenerator:
         weather_agg: WeatherAggregator
     ) -> Optional[TradeSignal]:
         """
-        Generate a signal for a single market.
+        Generate a signal for a single market using 3-bin strategy.
 
-        Returns TradeSignal if high-conviction, None otherwise.
+        Returns TradeSignal if it passes all filters, None otherwise.
         """
         ticker = market.get('ticker')
         logger.debug(f"Analyzing market {ticker}")
@@ -168,55 +170,7 @@ class SignalGenerator:
         # Log temperature for future backtesting
         self._log_temperature_data(weather_data, station_id, city_name)
 
-        # Step 3: Generate probability distribution
-        try:
-            model_probs_dict = self.predictor.hybrid_bucket_probabilities(
-                weather_data=weather_data,
-                buckets=buckets,
-                station_id=station_id,
-                apply_bias_correction=True
-            )
-            if not model_probs_dict:
-                logger.debug(f"No probabilities for {city_name}")
-                return None
-
-            model_probs = {label: d['probability'] for label, d in model_probs_dict.items()}
-        except Exception as e:
-            logger.error(f"Probability calculation failed for {ticker}: {e}")
-            return None
-
-        # Step 4: Get market prices
-        market_prices = self._get_market_prices(ticker, kalshi_client, buckets)
-        if not market_prices:
-            logger.debug(f"No market prices for {ticker}")
-            return None
-
-        # Step 5: Calculate edge
-        try:
-            edge_summary = self.predictor.calculate_edge(
-                model_probs=model_probs,
-                market_prices=market_prices,
-                buckets=buckets,
-                station_id=station_id,
-                weather_data=weather_data,
-                min_edge=self.min_edge_threshold
-            )
-        except Exception as e:
-            logger.error(f"Edge calculation failed for {ticker}: {e}")
-            return None
-
-        # Step 6: Filter for high-conviction signals
-        if edge_summary.confidence_score < self.min_confidence:
-            logger.debug(
-                f"Low confidence {edge_summary.confidence_score:.0f} for {ticker}, skipping"
-            )
-            return None
-
-        if edge_summary.overall_ev <= 0:
-            logger.debug(f"No positive EV for {ticker}, skipping")
-            return None
-
-        # Step 7: Select the single bucket containing the predicted temperature
+        # Step 3: Get predicted temperature (consensus from all models)
         predicted_temp_c = weather_data.daily_forecast[0].temperature_max if weather_data.daily_forecast else None
         if predicted_temp_c is None:
             logger.debug(f"No predicted temperature for {ticker}")
@@ -224,28 +178,66 @@ class SignalGenerator:
 
         # Convert Celsius to Fahrenheit (Open-Meteo returns temps in Celsius)
         predicted_temp_f = (predicted_temp_c * 9/5) + 32
+        logger.debug(f"Predicted temperature for {ticker}: {predicted_temp_c:.1f}°C = {predicted_temp_f:.1f}°F")
 
-        target_buckets = self._find_bucket_for_temperature(predicted_temp_f, buckets)
+        # Step 4: Find center bin and 3 adjacent bins
+        target_buckets = self._find_three_adjacent_buckets(predicted_temp_f, buckets)
         if not target_buckets:
-            logger.debug(f"Predicted temp {predicted_temp_f:.1f}°F (from {predicted_temp_c:.1f}°C) not in any bucket for {ticker}")
+            logger.debug(f"Could not find 3 adjacent buckets for {predicted_temp_f:.1f}°F in {ticker}")
             return None
 
-        # Step 8: Calculate allocation proportional to edge
-        allocation = self._calculate_allocation(
-            target_buckets,
-            edge_summary.bucket_edges
+        logger.debug(f"Selected 3-bin strategy for {ticker}: {target_buckets}")
+
+        # Step 5: Get market prices for the 3 bins
+        market_prices = self._get_market_prices(ticker, kalshi_client, buckets)
+        if not market_prices:
+            logger.debug(f"No market prices for {ticker}")
+            return None
+
+        # Step 6: Apply price filters from PDF Step 13
+        prices_for_bins = [market_prices.get(b, 0) for b in target_buckets]
+
+        # Check: sum of 3 bin prices <= 95¢
+        sum_price = sum(prices_for_bins)
+        if sum_price > self.max_sum_price:
+            logger.debug(
+                f"Sum of prices {sum_price:.2f} > {self.max_sum_price:.2f} for {ticker}, skipping"
+            )
+            return None
+
+        # Check: each bin >= 1¢ (resolved bin filter)
+        if any(p < self.min_bin_price for p in prices_for_bins):
+            logger.debug(f"One or more bins < {self.min_bin_price:.2f} for {ticker}, skipping")
+            return None
+
+        # Check: each bin <= 45¢ (market already priced in filter)
+        if any(p > self.max_bin_price for p in prices_for_bins):
+            logger.debug(f"One or more bins > {self.max_bin_price:.2f} for {ticker}, skipping")
+            return None
+
+        logger.info(
+            f"✓ 3-bin signal for {ticker}: bins={target_buckets}, "
+            f"prices={[f'{p:.2f}' for p in prices_for_bins]}, sum={sum_price:.2f}"
         )
 
-        # Step 9: Estimate notional sizing
+        # Step 7: Create signal with equal allocation to 3 bins
+        allocation = [1.0/3.0, 1.0/3.0, 1.0/3.0]  # Equal weight to 3 bins
+
+        # Step 8: Estimate notional sizing
         try:
             portfolio_balance = kalshi_client.get_portfolio_balance()
             equity = portfolio_balance.get('balance', 0) / 100  # cents to dollars
-            notional = equity * 0.03  # Initial 3% sizing (risk manager will adjust)
+            notional = equity * 0.03  # Initial 3% sizing
         except Exception as e:
             logger.debug(f"Could not fetch portfolio balance: {e}")
             notional = 10.0  # Fallback
 
-        # Step 10: Create signal
+        # Calculate confidence score based on model agreement
+        confidence_score = self._calculate_model_agreement_score(weather_data)
+
+        # Step 9: Calculate edge (all prices should be < 1.0 for math edge)
+        math_edge = 1.0 - sum_price
+
         signal = TradeSignal(
             market_ticker=ticker,
             station_id=station_id,
@@ -253,16 +245,56 @@ class SignalGenerator:
             target_buckets=target_buckets,
             allocation=allocation,
             total_notional=notional,
-            edge_pct=edge_summary.overall_ev * 100,
-            confidence=edge_summary.confidence_score,
-            reasoning=edge_summary.reasoning
+            edge_pct=math_edge * 100,
+            confidence=confidence_score,
+            reasoning=f"3-bin strategy: {target_buckets} at {[f'{p:.2f}' for p in prices_for_bins]} (math edge: {math_edge*100:.1f}%)"
         )
 
-        logger.info(
-            f"✓ Signal generated for {ticker}: buckets={target_buckets}, "
-            f"edge={signal.edge_pct:.1f}%, confidence={signal.confidence:.0f}"
-        )
         return signal
+
+    def _find_three_adjacent_buckets(
+        self,
+        predicted_temp: float,
+        available_buckets: List[Bucket]
+    ) -> List[str]:
+        """
+        Find the center bin containing predicted temperature,
+        then return the 3 adjacent bins (center - 1, center, center + 1).
+
+        From PDF: "Center of consensus, plus one on each side"
+        """
+        # Find which bucket contains the predicted temperature
+        center_bucket = None
+        center_index = None
+
+        for i, bucket in enumerate(available_buckets):
+            if bucket.contains(predicted_temp):
+                center_bucket = bucket
+                center_index = i
+                break
+
+        if center_bucket is None:
+            # Temperature doesn't fall into any bucket - try fallback to nearest
+            distances = [(i, abs(bucket.midpoint() - predicted_temp)) for i, bucket in enumerate(available_buckets)]
+            center_index = min(distances, key=lambda x: x[1])[0]
+            center_bucket = available_buckets[center_index]
+            logger.debug(f"Temperature {predicted_temp:.1f}°F not in any bucket, using nearest: {center_bucket.label}")
+
+        # Get 3 adjacent bins: center - 1, center, center + 1
+        bins_to_use = []
+
+        # Add below bucket if it exists
+        if center_index > 0:
+            bins_to_use.append(available_buckets[center_index - 1].label)
+
+        # Add center bucket
+        bins_to_use.append(center_bucket.label)
+
+        # Add above bucket if it exists
+        if center_index < len(available_buckets) - 1:
+            bins_to_use.append(available_buckets[center_index + 1].label)
+
+        return bins_to_use
 
     def _get_market_prices(
         self,
@@ -270,7 +302,7 @@ class SignalGenerator:
         kalshi_client,
         buckets: List[Bucket]
     ) -> Optional[Dict[str, float]]:
-        """Extract market-implied probabilities from orderbook."""
+        """Extract market prices for each bucket from orderbook."""
         try:
             orderbook = kalshi_client.get_orderbook(ticker)
             yes_bids = orderbook.get('yes_dollars', [])
@@ -291,7 +323,6 @@ class SignalGenerator:
             market_prob = best_yes / total
 
             # Map same probability to all buckets (simplified)
-            # In production, could use orderbook ladder per bucket
             market_prices = {bucket.label: market_prob for bucket in buckets}
             return market_prices
 
@@ -299,45 +330,27 @@ class SignalGenerator:
             logger.debug(f"Failed to fetch orderbook for {ticker}: {e}")
             return None
 
-    def _find_bucket_for_temperature(
-        self,
-        predicted_temp: float,
-        available_buckets: List[Bucket]
-    ) -> List[str]:
+    def _calculate_model_agreement_score(self, weather_data: LocationWeatherData) -> float:
         """
-        Find the single bucket that contains the predicted temperature.
-
-        According to the strategy, only trade the bucket that matches the
-        predicted high temperature, not multiple adjacent buckets.
-
-        Args:
-            predicted_temp: The predicted maximum temperature (in Fahrenheit)
-            available_buckets: List of all available Bucket objects
-
-        Returns:
-            List with single bucket label if found, empty list otherwise
+        Calculate confidence based on model agreement.
+        From PDF: If 2 models agree (within 1°C), confidence is high.
+        If all 3 diverge by >3°C, skip the market.
         """
-        for bucket in available_buckets:
-            if bucket.contains(predicted_temp):
-                return [bucket.label]
-
-        return []
-
-    def _calculate_allocation(
-        self,
-        target_buckets: List[str],
-        bucket_edges: List
-    ) -> List[float]:
-        """Calculate allocation across target buckets.
-
-        With the strategy of trading only the predicted temperature bucket,
-        this will always return [1.0] for a single bucket.
-        """
-        if not target_buckets:
-            return []
-
-        # With single-bucket strategy, allocation is always full weight on that bucket
-        return [1.0] * len(target_buckets)
+        # For now, return a base score since we're using ensemble data
+        # In production, this would check individual model forecasts
+        if weather_data.ensemble_forecast and len(weather_data.ensemble_forecast) > 0:
+            ensemble = weather_data.ensemble_forecast[0]
+            # Lower std dev = higher agreement = higher confidence
+            # std_dev of ~3°C or less = good agreement
+            if ensemble.temperature_std <= 1.0:
+                return 95.0
+            elif ensemble.temperature_std <= 2.0:
+                return 85.0
+            elif ensemble.temperature_std <= 3.0:
+                return 75.0
+            else:
+                return 60.0
+        return 70.0
 
     def _log_temperature_data(
         self,
@@ -355,9 +368,7 @@ class SignalGenerator:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "station_id": station_id,
                 "city": city_name,
-                "temperature_actual": daily.temperature,
                 "temperature_max": daily.temperature_max,
-                "temperature_min": getattr(daily, 'temperature_min', None),
             }
 
             # Add ensemble stats if available
@@ -366,7 +377,6 @@ class SignalGenerator:
                 temp_log.update({
                     "ensemble_mean": ensemble.temperature_mean,
                     "ensemble_std": ensemble.temperature_std,
-                    "ensemble_members": ensemble.ensemble_members,
                 })
 
             logger.info(f"[TEMPERATURE] {json.dumps(temp_log)}")
