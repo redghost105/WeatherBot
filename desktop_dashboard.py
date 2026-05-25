@@ -368,7 +368,7 @@ class RealDataDashboard:
 
             frame = sg.Frame('', frame_layout, border_width=2, relief=sg.RELIEF_SOLID,
                            element_justification='left', background_color='#1A1A1A',
-                           text_color='#FFFFFF', pad=(5, 5))
+                           title_color='#FFFFFF', pad=(5, 5))
 
             close_btn = sg.Button('CLOSE', key=close_key,
                                  button_color=('#FFFFFF', '#f44336'),
@@ -419,7 +419,7 @@ class RealDataDashboard:
 
             frame = sg.Frame('', frame_layout, border_width=2, relief=sg.RELIEF_SOLID,
                            element_justification='center', background_color='#1A1A1A',
-                           text_color='#FFFFFF', pad=(5, 5))
+                           title_color='#FFFFFF', pad=(5, 5))
 
             event_boxes.append(frame)
 

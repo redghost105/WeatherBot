@@ -2,7 +2,7 @@
 Type=Application
 Name=WeatherBot Dashboard
 Comment=Real-time trading monitoring dashboard
-Exec=python3 /home/carter/claude_programs/Polymarket/desktop_dashboard.py
+Exec=python3 /home/carter/claude_programs/Polymarket/desktop_dashboard.py >> /tmp/weatherbot-dashboard.log 2>&1
 Icon=/home/carter/claude_programs/Polymarket/weatherbot-icon.svg
 Terminal=false
 Categories=Office;Finance;
