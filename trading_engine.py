@@ -87,11 +87,15 @@ class TradingEngine:
         # Initialize modular components
         self.signal_generator = None
         self.resolution_learner = None
+        self.telegram_notifier = None
         if self.predictor:
             self.signal_generator = SignalGenerator(self.predictor)
             self.resolution_learner = ResolutionLearner(self.predictor.bias_learner)
             logger.info("✓ SignalGenerator initialized")
             logger.info("✓ ResolutionLearner initialized")
+
+        # Initialize Telegram notifications
+        self.init_telegram_notifier()
 
         # Verify all critical components are ready
         if not self.kalshi_client:
@@ -185,20 +189,38 @@ class TradingEngine:
             logger.error(f"✗ Failed to initialize execution service: {e}")
             self.execution_service = None
 
+    def init_telegram_notifier(self):
+        """Initialize Telegram notifications."""
+        try:
+            from telegram_notifier import TelegramNotifier
+
+            bot_token = os.getenv('TELEGRAM_BOT_TOKEN')
+            chat_id = os.getenv('TELEGRAM_CHAT_ID')
+
+            if bot_token and chat_id:
+                self.telegram_notifier = TelegramNotifier(bot_token, chat_id)
+                logger.info("✓ Telegram notifications enabled")
+            else:
+                logger.info("Telegram notifications not configured (TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing)")
+                self.telegram_notifier = None
+        except Exception as e:
+            logger.warning(f"Failed to initialize Telegram notifier: {e}")
+            self.telegram_notifier = None
+
     def scan_markets(self) -> List[Dict]:
         """
-        Market Scanner: Discover active Kalshi weather markets for tomorrow.
+        Market Scanner: Discover active Kalshi weather markets for today and tomorrow.
 
-        Strategy: Trade tomorrow's weather events for better forecast quality
-        and more time for edge to compound.
+        Strategy: Trade today and tomorrow's weather events for optimal forecast quality
+        and execution timing.
 
         Filters:
         - Only configured cities (CITIES_KALSHI)
-        - Event occurs tomorrow (occurrence_datetime == tomorrow's date)
+        - Event occurs today or tomorrow (occurrence_datetime matches today or tomorrow's date)
         - Status is 'open'
 
         Returns:
-            List of market dicts for tomorrow's events with metadata
+            List of market dicts for today and tomorrow's events with metadata
         """
         if not self.kalshi_client:
             return []
@@ -225,14 +247,16 @@ class TradingEngine:
                     logger.debug(f"Error fetching {city_name} markets: {e}")
                     continue
 
-            # Filter to tomorrow's markets based on occurrence date
+            # Filter to today and tomorrow's markets based on occurrence date
             qualified = []
             now = datetime.now(timezone.utc)
+            today = now.date()
             tomorrow = (now + timedelta(days=1)).date()
+            target_dates = {today, tomorrow}
 
             for market in all_weather_markets:
                 try:
-                    # Check if event occurs tomorrow
+                    # Check if event occurs today or tomorrow
                     occurrence_str = market.get('occurrence_datetime')
                     if not occurrence_str:
                         logger.debug(f"Market {market.get('ticker')} has no occurrence_datetime")
@@ -241,7 +265,7 @@ class TradingEngine:
                     occurrence_dt = datetime.fromisoformat(occurrence_str.replace('Z', '+00:00'))
                     event_date = occurrence_dt.date()
 
-                    if event_date == tomorrow:
+                    if event_date in target_dates:
                         # Calculate hours to close for logging
                         close_time_str = market.get('close_time')
                         if close_time_str:
@@ -257,7 +281,7 @@ class TradingEngine:
                     continue
 
             self._stats['markets_scanned'] = len(qualified)
-            logger.info(f"Qualified {len(qualified)} tomorrow's markets (scanned {len(all_weather_markets)} total weather markets)")
+            logger.info(f"Qualified {len(qualified)} markets (today + tomorrow) from {len(all_weather_markets)} total weather markets")
             return qualified
 
         except Exception as e:
@@ -385,6 +409,10 @@ class TradingEngine:
                 logger.info(f"✓ Validated {signal.market_ticker}: size=${signal.total_notional:.2f}, edge={signal.edge_pct:.1f}%, confidence={signal.confidence:.0f}/100")
                 validated.append(signal)
 
+                # Send Telegram notification for signal detection
+                if self.telegram_notifier:
+                    self.telegram_notifier.notify_signal_detected(signal)
+
             except Exception as e:
                 logger.error(f"Trade validation error for {signal.market_ticker}: {e}")
                 continue
@@ -462,6 +490,14 @@ class TradingEngine:
                 if order_count > 0:
                     executed += 1
                     logger.info(f"✓ {signal.market_ticker} execution complete: {order_count} order(s)")
+
+                    # Send Telegram notification
+                    if self.telegram_notifier:
+                        self.telegram_notifier.notify_trade_executed(
+                            signal=signal,
+                            num_orders=order_count,
+                            mode=self.trading_mode.upper()
+                        )
 
             except Exception as e:
                 logger.error(f"Trade execution failed for {signal.market_ticker}: {e}")
