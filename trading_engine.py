@@ -113,10 +113,10 @@ class TradingEngine:
             'active_markets': 0
         }
 
-        # Trade journal for archiving
+        # Trade journal for archiving - track detailed trade data
         self.trade_journal = {
             'created_at': datetime.now(timezone.utc).isoformat(),
-            'trades': []
+            'trades': []  # List of {ticker, city, buckets, notional, entry_time, edge, confidence, pnl, resolution_time, status}
         }
 
     def _setup_file_logging(self):
@@ -190,7 +190,7 @@ class TradingEngine:
             self.execution_service = None
 
     def init_telegram_notifier(self):
-        """Initialize Telegram notifications."""
+        """Initialize Telegram notifications and command polling."""
         try:
             from telegram_notifier import TelegramNotifier
 
@@ -198,7 +198,8 @@ class TradingEngine:
             chat_id = os.getenv('TELEGRAM_CHAT_ID')
 
             if bot_token and chat_id:
-                self.telegram_notifier = TelegramNotifier(bot_token, chat_id)
+                self.telegram_notifier = TelegramNotifier(bot_token, chat_id, trading_engine=self)
+                self.telegram_notifier.start_polling()
                 logger.info("✓ Telegram notifications enabled")
             else:
                 logger.info("Telegram notifications not configured (TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing)")
@@ -491,6 +492,21 @@ class TradingEngine:
                     executed += 1
                     logger.info(f"✓ {signal.market_ticker} execution complete: {order_count} order(s)")
 
+                    # Record trade in journal
+                    trade_record = {
+                        'ticker': signal.market_ticker,
+                        'city': signal.city_name,
+                        'buckets': ', '.join(signal.target_buckets),
+                        'notional': signal.total_notional,
+                        'entry_time': datetime.now(timezone.utc).isoformat(),
+                        'edge': signal.edge_pct,
+                        'confidence': signal.confidence,
+                        'pnl': 0.0,  # Updated when resolved
+                        'resolution_time': None,
+                        'status': 'active'
+                    }
+                    self.trade_journal['trades'].append(trade_record)
+
                     # Send Telegram notification
                     if self.telegram_notifier:
                         self.telegram_notifier.notify_trade_executed(
@@ -587,6 +603,70 @@ class TradingEngine:
             except Exception as e:
                 logger.error(f"Trading loop error: {e}")
                 time.sleep(self.scan_interval)
+
+    def get_performance_stats(self) -> Dict:
+        """Get performance statistics for Telegram /stats command."""
+        trades = self.trade_journal.get('trades', [])
+
+        active_trades = [t for t in trades if t['status'] == 'active']
+        resolved_trades = [t for t in trades if t['status'] == 'resolved']
+
+        total_pnl = sum(t.get('pnl', 0) for t in resolved_trades)
+        winning = [t for t in resolved_trades if t.get('pnl', 0) > 0]
+        losing = [t for t in resolved_trades if t.get('pnl', 0) < 0]
+
+        win_rate = (len(winning) / len(resolved_trades) * 100) if resolved_trades else 0
+        avg_edge = sum(t.get('edge', 0) for t in trades) / len(trades) if trades else 0
+        avg_confidence = sum(t.get('confidence', 0) for t in trades) / len(trades) if trades else 0
+        avg_size = sum(t.get('notional', 0) for t in trades) / len(trades) if trades else 0
+
+        return {
+            'total_pnl': total_pnl,
+            'win_rate': win_rate,
+            'total_trades': len(resolved_trades),
+            'winning_trades': len(winning),
+            'losing_trades': len(losing),
+            'avg_edge': avg_edge,
+            'avg_confidence': avg_confidence,
+            'avg_size': avg_size,
+            'active_trades': len(active_trades),
+            'resolved_trades': len(resolved_trades),
+            'last_scan': self._stats.get('last_scan', 'Never')
+        }
+
+    def get_trades_summary(self) -> Dict:
+        """Get trades summary for Telegram /trades command."""
+        trades = self.trade_journal.get('trades', [])
+
+        active = []
+        resolved = []
+
+        for trade in trades:
+            trade_data = {
+                'ticker': trade.get('ticker', 'UNKNOWN'),
+                'city': trade.get('city', 'UNKNOWN'),
+                'buckets': trade.get('buckets', ''),
+                'notional': trade.get('notional', 0),
+                'entry_time': trade.get('entry_time', ''),
+                'edge': trade.get('edge', 0),
+                'confidence': trade.get('confidence', 0),
+                'pnl': trade.get('pnl', 0),
+                'resolution_time': trade.get('resolution_time', '')
+            }
+
+            if trade.get('status') == 'active':
+                active.append(trade_data)
+            else:
+                resolved.append(trade_data)
+
+        # Sort by most recent first
+        active.sort(key=lambda x: x['entry_time'], reverse=True)
+        resolved.sort(key=lambda x: x['resolution_time'], reverse=True)
+
+        return {
+            'active': active,
+            'resolved': resolved
+        }
 
     def start(self):
         """Start trading engine in background thread."""
