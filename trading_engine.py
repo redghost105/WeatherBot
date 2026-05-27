@@ -444,6 +444,16 @@ class TradingEngine:
             try:
                 logger.info(f"Executing {signal.market_ticker}: {', '.join(signal.target_buckets)} | size=${signal.total_notional:.2f} | {self.trading_mode.upper()}")
 
+                # Fetch market close time for this trade
+                close_time = None
+                if self.kalshi_client:
+                    try:
+                        market = self.kalshi_client.get_market(signal.market_ticker)
+                        if market:
+                            close_time = market.get('close_time')
+                    except Exception as e:
+                        logger.debug(f"Could not fetch market close time for {signal.market_ticker}: {e}")
+
                 # Split notional across target buckets proportionally
                 order_count = 0
                 for bucket_label, alloc_pct in zip(signal.target_buckets, signal.allocation):
@@ -499,6 +509,7 @@ class TradingEngine:
                         'buckets': ', '.join(signal.target_buckets),
                         'notional': signal.total_notional,
                         'entry_time': datetime.now(timezone.utc).isoformat(),
+                        'close_time': close_time,
                         'edge': signal.edge_pct,
                         'confidence': signal.confidence,
                         'pnl': 0.0,  # Updated when resolved
@@ -648,6 +659,7 @@ class TradingEngine:
                 'buckets': trade.get('buckets', ''),
                 'notional': trade.get('notional', 0),
                 'entry_time': trade.get('entry_time', ''),
+                'close_time': trade.get('close_time', ''),
                 'edge': trade.get('edge', 0),
                 'confidence': trade.get('confidence', 0),
                 'pnl': trade.get('pnl', 0),

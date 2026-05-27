@@ -220,11 +220,21 @@ Last Scan: {stats['last_scan']}
             active_section = "**ACTIVE TRADES**\n"
             if trades_data['active']:
                 for trade in trades_data['active'][:5]:
+                    # Parse close_time if available
+                    close_time_str = ""
+                    if trade['close_time']:
+                        try:
+                            from datetime import datetime
+                            close_dt = datetime.fromisoformat(trade['close_time'].replace('Z', '+00:00'))
+                            close_time_str = f"\nResolves: {close_dt.strftime('%Y-%m-%d %H:%M UTC')}"
+                        except:
+                            close_time_str = f"\nResolves: {trade['close_time']}"
+
                     active_section += f"""
 Market: {trade['ticker']}
 City: {trade['city']}
 Buckets: {trade['buckets']}
-Entry: ${trade['notional']:.2f} @ {trade['entry_time']}
+Entry: ${trade['notional']:.2f} @ {trade['entry_time']}{close_time_str}
 Edge: {trade['edge']:.1f}% | Confidence: {trade['confidence']:.0f}%
 ---"""
             else:
