@@ -325,6 +325,47 @@ class TradingEngine:
         self._stats['signals_generated'] = len(signals)
         return signals
 
+    def _deduplicate_signals(self, signals: List[TradeSignal]) -> List[TradeSignal]:
+        """
+        Deduplicate signals by market event (city + date combination).
+
+        For each (city, date) pair, keeps only the signal with highest edge.
+        This ensures only one trade executes per market event.
+
+        Args:
+            signals: Raw signals from signal generation
+
+        Returns:
+            Deduplicated signals, one per market event
+        """
+        if not signals:
+            return []
+
+        # Group signals by (city_name, date_key)
+        grouped = {}
+        for signal in signals:
+            # Extract date from market_ticker (e.g., "26MAY24" from "KXHIGHNY-26MAY24-T88")
+            match = re.search(r'-(\d+[A-Z]{3}\d{2})-', signal.market_ticker)
+            if match:
+                date_key = match.group(1)
+            else:
+                date_key = "unknown"
+
+            market_key = (signal.city_name, date_key)
+
+            # Keep signal with highest edge for this market event
+            if market_key not in grouped:
+                grouped[market_key] = signal
+            else:
+                if signal.edge_pct > grouped[market_key].edge_pct:
+                    grouped[market_key] = signal
+
+        deduplicated = list(grouped.values())
+        if len(deduplicated) < len(signals):
+            logger.info(f"Deduplicated {len(signals)} signals down to {len(deduplicated)} (1 per market event)")
+
+        return deduplicated
+
     def validate_trades(self, signals: List[TradeSignal]) -> List[TradeSignal]:
         """
         Trade Validator: Check risk constraints before execution.
@@ -341,6 +382,9 @@ class TradingEngine:
         """
         if not signals:
             return []
+
+        # Deduplicate to one trade per market event (city + date)
+        signals = self._deduplicate_signals(signals)
 
         validated = []
 
