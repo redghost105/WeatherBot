@@ -114,10 +114,16 @@ class TradingEngine:
         }
 
         # Trade journal for archiving - track detailed trade data
-        self.trade_journal = {
-            'created_at': datetime.now(timezone.utc).isoformat(),
-            'trades': []  # List of {ticker, city, buckets, notional, entry_time, edge, confidence, pnl, resolution_time, status}
-        }
+        # Load from disk if exists, otherwise create new
+        self.trade_journal_path = os.path.expanduser(
+            os.getenv('TRADE_JOURNAL_PATH', '~/trading_logs/trade_journal.json')
+        )
+        self.trade_journal = self._load_trade_journal()
+        if not self.trade_journal:
+            self.trade_journal = {
+                'created_at': datetime.now(timezone.utc).isoformat(),
+                'trades': []
+            }
 
     def _setup_file_logging(self):
         """Set up self-contained rotating file logging."""
@@ -132,6 +138,30 @@ class TradingEngine:
         handler.setFormatter(logging.Formatter('%(asctime)s [%(name)s] %(levelname)s: %(message)s'))
         logging.getLogger().addHandler(handler)  # root logger → captures ALL module loggers
         logger.info(f"File logging active: {log_path}")
+
+    def _load_trade_journal(self) -> Optional[Dict]:
+        """Load persisted trade journal from disk."""
+        try:
+            path = Path(self.trade_journal_path)
+            if path.exists():
+                with open(path, 'r') as f:
+                    journal = json.load(f)
+                    logger.info(f"✓ Loaded trade journal from {path} ({len(journal.get('trades', []))} trades)")
+                    return journal
+        except Exception as e:
+            logger.warning(f"Could not load trade journal: {e}")
+        return None
+
+    def _save_trade_journal(self):
+        """Persist trade journal to disk."""
+        try:
+            path = Path(self.trade_journal_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'w') as f:
+                json.dump(self.trade_journal, f, indent=2)
+                logger.debug(f"Trade journal saved ({len(self.trade_journal.get('trades', []))} trades)")
+        except Exception as e:
+            logger.error(f"Failed to save trade journal: {e}")
 
     def init_kalshi_client(self):
         """Initialize Kalshi API client."""
@@ -330,7 +360,7 @@ class TradingEngine:
         Deduplicate signals by market event (city + date combination).
 
         For each (city, date) pair, keeps only the signal with highest edge.
-        Skips markets we already have active positions in.
+        Skips markets we've already traded (checked against trade journal + API positions).
         This ensures only one trade executes per market event, ever.
 
         Args:
@@ -344,6 +374,18 @@ class TradingEngine:
 
         # Get list of markets we've already traded
         traded_markets = set()
+
+        # Check our trade journal for any executed trades
+        try:
+            trades = self.trade_journal.get('trades', [])
+            for trade in trades:
+                ticker = trade.get('ticker', '')
+                if ticker:
+                    traded_markets.add(ticker)
+        except Exception as e:
+            logger.debug(f"Could not read trade journal: {e}")
+
+        # Also check API positions in case of live mode
         try:
             positions = self.kalshi_client.get_positions()
             for pos in positions:
@@ -380,7 +422,7 @@ class TradingEngine:
 
         deduplicated = list(grouped.values())
         if skipped > 0:
-            logger.info(f"Skipped {skipped} signals for markets with existing positions")
+            logger.info(f"Skipped {skipped} signals for markets already traded")
         if len(deduplicated) < len(signals):
             logger.info(f"Deduplicated {len(signals)} signals down to {len(deduplicated)} (1 per market event)")
 
@@ -581,6 +623,7 @@ class TradingEngine:
                         'status': 'active'
                     }
                     self.trade_journal['trades'].append(trade_record)
+                    self._save_trade_journal()
 
                     # Send Telegram notification
                     if self.telegram_notifier:
