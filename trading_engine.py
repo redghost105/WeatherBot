@@ -153,13 +153,17 @@ class TradingEngine:
         return None
 
     def _save_trade_journal(self):
-        """Persist trade journal to disk."""
+        """Persist trade journal to disk atomically."""
         try:
             path = Path(self.trade_journal_path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, 'w') as f:
+            # Write to temp file first, then atomically replace
+            # This prevents journal corruption if process crashes mid-write
+            tmp = path.with_suffix('.json.tmp')
+            with open(tmp, 'w') as f:
                 json.dump(self.trade_journal, f, indent=2)
-                logger.debug(f"Trade journal saved ({len(self.trade_journal.get('trades', []))} trades)")
+            os.replace(tmp, path)  # atomic on POSIX
+            logger.debug(f"Trade journal saved ({len(self.trade_journal.get('trades', []))} trades)")
         except Exception as e:
             logger.error(f"Failed to save trade journal: {e}")
 
@@ -372,50 +376,46 @@ class TradingEngine:
         if not signals:
             return []
 
-        # Get list of markets we've already traded
-        # Extract base ticker (without bucket suffix) for deduplication
-        traded_markets = set()
+        # Get list of (city, date) events we've already traded
+        traded_city_dates = set()
 
         # Check our trade journal for any executed trades
         try:
             trades = self.trade_journal.get('trades', [])
             for trade in trades:
-                ticker = trade.get('ticker', '')
-                if ticker:
-                    # Extract base ticker by removing bucket suffix (e.g., "-B80.5" from "KXHIGHNY-26MAY28-B80.5")
-                    base_ticker = re.sub(r'-B[\d.]+$', '', ticker)
-                    traded_markets.add(base_ticker)
+                # Prefer new city_date_key field if present
+                city_date_key = trade.get('city_date_key', '')
+                if city_date_key:
+                    traded_city_dates.add(city_date_key)
+                else:
+                    # Backwards-compat: derive from ticker + city for old records
+                    ticker = trade.get('ticker', '')
+                    city = trade.get('city', '')
+                    if ticker and city:
+                        m = re.search(r'-(\d+[A-Z]{3}\d{2})-', ticker)
+                        if m:
+                            date_key = m.group(1)
+                            traded_city_dates.add(f"{city}_{date_key}")
         except Exception as e:
             logger.debug(f"Could not read trade journal: {e}")
-
-        # Also check API positions in case of live mode
-        try:
-            positions = self.kalshi_client.get_positions()
-            for pos in positions:
-                ticker = pos.get('market_ticker', '')
-                if ticker:
-                    base_ticker = re.sub(r'-B[\d.]+$', '', ticker)
-                    traded_markets.add(base_ticker)
-        except Exception as e:
-            logger.debug(f"Could not fetch positions for dedup check: {e}")
 
         # Group signals by (city_name, date_key)
         grouped = {}
         skipped = 0
         for signal in signals:
-            # Extract base ticker for comparison (without bucket suffix)
-            base_signal_ticker = re.sub(r'-B[\d.]+$', '', signal.market_ticker)
-            # Skip if we already have a position in this market (base ticker)
-            if base_signal_ticker in traded_markets:
-                skipped += 1
-                continue
-
-            # Extract date from market_ticker (e.g., "26MAY24" from "KXHIGHNY-26MAY24-T88")
+            # Extract date from market_ticker (e.g., "26MAY28" from "KXHIGHNY-26MAY28-B80.5")
             match = re.search(r'-(\d+[A-Z]{3}\d{2})-', signal.market_ticker)
             if match:
                 date_key = match.group(1)
             else:
                 date_key = "unknown"
+
+            city_date_key = f"{signal.city_name}_{date_key}"
+
+            # Skip if we already have a position in this city+date event
+            if city_date_key in traded_city_dates:
+                skipped += 1
+                continue
 
             market_key = (signal.city_name, date_key)
 
@@ -522,10 +522,6 @@ class TradingEngine:
                 logger.info(f"✓ Validated {signal.market_ticker}: size=${signal.total_notional:.2f}, edge={signal.edge_pct:.1f}%, confidence={signal.confidence:.0f}/100")
                 validated.append(signal)
 
-                # Send Telegram notification for signal detection
-                if self.telegram_notifier:
-                    self.telegram_notifier.notify_signal_detected(signal)
-
             except Exception as e:
                 logger.error(f"Trade validation error for {signal.market_ticker}: {e}")
                 continue
@@ -615,8 +611,14 @@ class TradingEngine:
                     logger.info(f"✓ {signal.market_ticker} execution complete: {order_count} order(s)")
 
                     # Record trade in journal
+                    # Extract date for city_date_key tracking
+                    date_match = re.search(r'-(\d+[A-Z]{3}\d{2})-', signal.market_ticker)
+                    date_key = date_match.group(1) if date_match else "unknown"
+                    city_date_key = f"{signal.city_name}_{date_key}"
+
                     trade_record = {
                         'ticker': signal.market_ticker,
+                        'city_date_key': city_date_key,  # Track (city, date) for dedup
                         'city': signal.city_name,
                         'buckets': ', '.join(signal.target_buckets),
                         'notional': signal.total_notional,
