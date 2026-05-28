@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **WeatherBot** (3593 symbols, 5592 relationships, 172 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **WeatherBot** (3748 symbols, 5844 relationships, 185 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -41,3 +41,52 @@ This project is indexed by GitNexus as **WeatherBot** (3593 symbols, 5592 relati
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+---
+
+# Token Optimization (Caveman Style)
+
+## Output Strategy: Terse & Direct
+- **No fluff.** Skip intro sentences, explanations, context. Jump to the answer.
+- **One-liners where possible.** Commands, results, next steps. No elaboration.
+- **Code first.** Show the fix, then explain *only* if non-obvious.
+- **Abbreviate.** Use short forms: `fn` → function, `msg` → message, `init` → initialize.
+- **Lists over prose.** Use bullets, tables, code blocks. No long paragraphs.
+- **No pleasantries.** No "Here's what I did...", "Let me...", "I'll help you...". Just do it.
+- **Result first.** Error? Show it. Success? Show proof. Then context if needed.
+
+## Command Output Filtering
+Use `./.claude/compress-output.sh` or manual filters in Bash commands:
+
+**Automatic compression** (after piping):
+```bash
+command | ./.claude/compress-output.sh test   # pytest output: failures only
+command | ./.claude/compress-output.sh git    # git: changed files only
+command | ./.claude/compress-output.sh npm    # npm: errors + status
+command | ./.claude/compress-output.sh cargo  # cargo: warnings/errors + summary
+command | ./.claude/compress-output.sh logs   # logs: errors + exceptions
+```
+
+**Manual filtering** (inline):
+- Test output: `pytest -q --tb=line` or `pytest --tb=short`
+- Git: `git log --oneline` or `git diff --stat`
+- Logs: `grep -E "error|fail|exception"`
+- Build: `2>&1 | grep -E "error|warn|failed"`
+
+**Future**: Install `rtk` for ~60-98% automatic compression:
+```bash
+cargo install rtk  # Requires system permission resolution
+```
+
+## When Editing Code
+Always consider impact. Use GitNexus:
+1. `gitnexus_impact({target: "symbolName", direction: "upstream"})` — who calls this?
+2. `gitnexus_detect_changes()` — before committing, what changed?
+3. If HIGH/CRITICAL: pause and report with full context
+
+## Memory & Observations
+Track insights via claude-mem tools (available in server-beta):
+- Root causes for bugs discovered and fixed
+- Architecture decisions and tradeoffs  
+- Integration points and API contracts
+- Performance characteristics and bottlenecks

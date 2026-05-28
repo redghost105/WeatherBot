@@ -1,0 +1,12 @@
+{
+  "sshConfigs": [
+    {
+      "id": "polymarket-droplet",
+      "name": "Polymarket DigitalOcean Droplet",
+      "sshHost": "root@165.227.94.30",
+      "sshPort": 22,
+      "sshIdentityFile": "~/.ssh/id_ed25519",
+      "startDirectory": "~/"
+    }
+  ]
+}
