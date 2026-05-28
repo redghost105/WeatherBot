@@ -373,6 +373,7 @@ class TradingEngine:
             return []
 
         # Get list of markets we've already traded
+        # Extract base ticker (without bucket suffix) for deduplication
         traded_markets = set()
 
         # Check our trade journal for any executed trades
@@ -381,7 +382,9 @@ class TradingEngine:
             for trade in trades:
                 ticker = trade.get('ticker', '')
                 if ticker:
-                    traded_markets.add(ticker)
+                    # Extract base ticker by removing bucket suffix (e.g., "-B80.5" from "KXHIGHNY-26MAY28-B80.5")
+                    base_ticker = re.sub(r'-B[\d.]+$', '', ticker)
+                    traded_markets.add(base_ticker)
         except Exception as e:
             logger.debug(f"Could not read trade journal: {e}")
 
@@ -391,7 +394,8 @@ class TradingEngine:
             for pos in positions:
                 ticker = pos.get('market_ticker', '')
                 if ticker:
-                    traded_markets.add(ticker)
+                    base_ticker = re.sub(r'-B[\d.]+$', '', ticker)
+                    traded_markets.add(base_ticker)
         except Exception as e:
             logger.debug(f"Could not fetch positions for dedup check: {e}")
 
@@ -399,8 +403,10 @@ class TradingEngine:
         grouped = {}
         skipped = 0
         for signal in signals:
-            # Skip if we already have a position in this market
-            if signal.market_ticker in traded_markets:
+            # Extract base ticker for comparison (without bucket suffix)
+            base_signal_ticker = re.sub(r'-B[\d.]+$', '', signal.market_ticker)
+            # Skip if we already have a position in this market (base ticker)
+            if base_signal_ticker in traded_markets:
                 skipped += 1
                 continue
 
