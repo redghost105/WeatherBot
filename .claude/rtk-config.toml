@@ -1,0 +1,15 @@
+# mcp-rtk configuration for Polymarket DigitalOcean MCP server
+# Aggressive compression preset for token optimization
+
+[defaults]
+compress = true
+keep_empty = false
+truncate_strings_at = 2000
+max_array_items = 100
+condense_users = false
+
+# Generic filters for DigitalOcean API responses
+[tools."*"]
+# Remove verbose metadata
+truncate_strings_at = 1500
+max_array_items = 50
