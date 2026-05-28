@@ -478,6 +478,16 @@ class METARSource(BaseWeatherSource):
     """METAR - Real-time aviation observations"""
     BASE_URL = "https://aviationweather.gov/api/data/metar"
 
+    @staticmethod
+    def _safe_metar_value(field):
+        """Extract numeric value from METAR field (handles both dict and list formats)."""
+        if isinstance(field, dict):
+            return float(field.get('value', 0))
+        if isinstance(field, list) and field:
+            val = field[0] if isinstance(field[0], (int, float, str)) else None
+            return float(val) if val is not None else 0.0
+        return 0.0
+
     def _get_station_code(self, latitude: float, longitude: float) -> Optional[str]:
         """Find nearest METAR station (requires external mapping or hardcoding)"""
         # This is a simplified approach - in production, use NOAA station database
@@ -504,15 +514,15 @@ class METARSource(BaseWeatherSource):
             metar = data['results'][0]
             return CurrentWeather(
                 timestamp=datetime.fromisoformat(metar.get('obsTime', datetime.utcnow().isoformat())),
-                temperature=float(metar.get('temp', {}).get('value', 0)),
-                temperature_2m=float(metar.get('temp', {}).get('value', 0)),
-                humidity=float(metar.get('dewp', {}).get('value', 0)) if 'dewp' in metar else None,
-                dew_point=float(metar.get('dewp', {}).get('value', 0)) if 'dewp' in metar else None,
-                wind_speed=float(metar.get('wdir', {}).get('value', 0)) if 'wdir' in metar else 0,
-                wind_direction=int(metar.get('wdir', {}).get('value', 0)) if 'wdir' in metar else None,
-                precipitation=float(metar.get('precp1H', {}).get('value', 0)) if 'precp1H' in metar else 0,
-                visibility=float(metar.get('vis', {}).get('value', 0)) if 'vis' in metar else None,
-                pressure=float(metar.get('altim', {}).get('value', 0)) if 'altim' in metar else None,
+                temperature=self._safe_metar_value(metar.get('temp', {})),
+                temperature_2m=self._safe_metar_value(metar.get('temp', {})),
+                humidity=self._safe_metar_value(metar.get('dewp', {})) if 'dewp' in metar else None,
+                dew_point=self._safe_metar_value(metar.get('dewp', {})) if 'dewp' in metar else None,
+                wind_speed=self._safe_metar_value(metar.get('wdir', {})) if 'wdir' in metar else 0,
+                wind_direction=int(self._safe_metar_value(metar.get('wdir', {}))) if 'wdir' in metar else None,
+                precipitation=self._safe_metar_value(metar.get('precp1H', {})) if 'precp1H' in metar else 0,
+                visibility=self._safe_metar_value(metar.get('vis', {})) if 'vis' in metar else None,
+                pressure=self._safe_metar_value(metar.get('altim', {})) if 'altim' in metar else None,
                 source=WeatherSource.METAR,
                 raw_data=metar,
             )
@@ -546,23 +556,14 @@ class METARSource(BaseWeatherSource):
 
             observations = []
 
-            def safe_metar_value(field):
-                """Extract numeric value from METAR field (handles both dict and list formats)."""
-                if isinstance(field, dict):
-                    return float(field.get('value', 0))
-                if isinstance(field, list) and field:
-                    val = field[0] if isinstance(field[0], (int, float, str)) else None
-                    return float(val) if val is not None else 0.0
-                return 0.0
-
             for metar in data.get('results', []):
                 obs = HistoricalObservation(
                     timestamp=datetime.fromisoformat(metar.get('obsTime', datetime.utcnow().isoformat())),
-                    temperature=safe_metar_value(metar.get('temp', {})),
-                    humidity=safe_metar_value(metar.get('dewp', {})) if 'dewp' in metar else None,
-                    wind_speed=safe_metar_value(metar.get('wdir', {})) if 'wdir' in metar else 0,
-                    wind_direction=int(safe_metar_value(metar.get('wdir', {}))) if 'wdir' in metar else None,
-                    precipitation=safe_metar_value(metar.get('precp1H', {})) if 'precp1H' in metar else 0,
+                    temperature=self._safe_metar_value(metar.get('temp', {})),
+                    humidity=self._safe_metar_value(metar.get('dewp', {})) if 'dewp' in metar else None,
+                    wind_speed=self._safe_metar_value(metar.get('wdir', {})) if 'wdir' in metar else 0,
+                    wind_direction=int(self._safe_metar_value(metar.get('wdir', {}))) if 'wdir' in metar else None,
+                    precipitation=self._safe_metar_value(metar.get('precp1H', {})) if 'precp1H' in metar else 0,
                     source=WeatherSource.METAR,
                     raw_data=metar,
                 )
