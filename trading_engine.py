@@ -330,20 +330,38 @@ class TradingEngine:
         Deduplicate signals by market event (city + date combination).
 
         For each (city, date) pair, keeps only the signal with highest edge.
-        This ensures only one trade executes per market event.
+        Skips markets we already have active positions in.
+        This ensures only one trade executes per market event, ever.
 
         Args:
             signals: Raw signals from signal generation
 
         Returns:
-            Deduplicated signals, one per market event
+            Deduplicated signals, one per market event, filtered for new markets only
         """
         if not signals:
             return []
 
+        # Get list of markets we've already traded
+        traded_markets = set()
+        try:
+            positions = self.kalshi_client.get_positions()
+            for pos in positions:
+                ticker = pos.get('market_ticker', '')
+                if ticker:
+                    traded_markets.add(ticker)
+        except Exception as e:
+            logger.debug(f"Could not fetch positions for dedup check: {e}")
+
         # Group signals by (city_name, date_key)
         grouped = {}
+        skipped = 0
         for signal in signals:
+            # Skip if we already have a position in this market
+            if signal.market_ticker in traded_markets:
+                skipped += 1
+                continue
+
             # Extract date from market_ticker (e.g., "26MAY24" from "KXHIGHNY-26MAY24-T88")
             match = re.search(r'-(\d+[A-Z]{3}\d{2})-', signal.market_ticker)
             if match:
@@ -361,6 +379,8 @@ class TradingEngine:
                     grouped[market_key] = signal
 
         deduplicated = list(grouped.values())
+        if skipped > 0:
+            logger.info(f"Skipped {skipped} signals for markets with existing positions")
         if len(deduplicated) < len(signals):
             logger.info(f"Deduplicated {len(signals)} signals down to {len(deduplicated)} (1 per market event)")
 
