@@ -22,8 +22,10 @@ CITIES_KALSHI = {
     'NYC': {'lat': 40.7772, 'lon': -73.8726, 'code': 'KLGA'},  # LaGuardia Airport
     'Chicago': {'lat': 41.9742, 'lon': -87.9073, 'code': 'KORD'},  # O'Hare Airport
     'Dallas': {'lat': 32.8471, 'lon': -96.8518, 'code': 'KDAL'},  # Love Field Airport
-    'Denver': {'lat': 39.7392, 'lon': -104.9903, 'code': 'KDEN'},  # Denver Int'l (unchanged)
-    'LA': {'lat': 34.0522, 'lon': -118.2437, 'code': 'KLAX'},  # LAX (unchanged)
+    'Denver': {'lat': 39.7392, 'lon': -104.9903, 'code': 'KDEN'},  # Denver Int'l
+    'Los Angeles': {'lat': 34.0522, 'lon': -118.2437, 'code': 'KLAX'},  # LAX
+    'Atlanta': {'lat': 33.6407, 'lon': -84.4277, 'code': 'KATL'},  # Hartsfield-Jackson Int'l
+    'Miami': {'lat': 25.7959, 'lon': -80.2870, 'code': 'KMIA'},  # Miami Int'l
 }
 
 
@@ -59,6 +61,22 @@ def parse_market_buckets(market: Dict) -> Optional[Tuple[List[Bucket], str]]:
                 city_name = city
                 station_id = config['code']
                 break
+
+        # Fallback for abbreviated city names (LA, NYC, Chi)
+        if not city_name:
+            title_upper = title.upper()
+            if 'LA' in title_upper or 'LOS ANGELES' in title_upper:
+                city_name = 'Los Angeles'
+                station_id = CITIES_KALSHI['Los Angeles']['code']
+            elif 'CHICAGO' in title_upper or 'CHI' in title_upper:
+                city_name = 'Chicago'
+                station_id = CITIES_KALSHI['Chicago']['code']
+            elif 'ATLANTA' in title_upper or 'ATL' in title_upper:
+                city_name = 'Atlanta'
+                station_id = CITIES_KALSHI['Atlanta']['code']
+            elif 'MIAMI' in title_upper or 'MIA' in title_upper:
+                city_name = 'Miami'
+                station_id = CITIES_KALSHI['Miami']['code']
 
         if not station_id:
             logger.debug(f"Could not identify city in title: {title}")

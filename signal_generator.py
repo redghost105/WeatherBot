@@ -11,7 +11,8 @@ Implements the 3-bin strategy from Paruchuri's Polymarket Weather Bot:
 
 import logging
 import json
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timezone, date, timedelta
 from dataclasses import dataclass
 from typing import Optional, List, Dict, Tuple
 
@@ -78,6 +79,8 @@ class SignalGenerator:
     ) -> List[TradeSignal]:
         """
         Generate trade signals from a list of markets using 3-bin strategy.
+        Uses event-centric grouping: groups markets by (city, date) to fetch
+        per-bin prices for the 3-bin portfolio.
 
         Args:
             markets: List of market dicts from Kalshi API
@@ -90,30 +93,260 @@ class SignalGenerator:
         if not self.predictor or not markets:
             return []
 
+        # Group markets by (city, date) to identify events
+        events = self._group_markets_by_event(markets)
         signals = []
 
-        for market in markets:
+        for (city, date_key), event_markets in events.items():
             try:
-                ticker = market.get('ticker', 'UNKNOWN')
-                # Only process bucket markets (contain 'B' in ticker)
-                # Skip threshold markets (contain 'T')
-                if '-B' not in ticker:
-                    logger.debug(f"Skipping non-bucket market {ticker}")
-                    continue
-
-                signal = self._generate_signal_for_market(
-                    market,
+                signal = self._generate_signal_for_event(
+                    city,
+                    date_key,
+                    event_markets,
                     kalshi_client
                 )
                 if signal:
                     signals.append(signal)
             except Exception as e:
-                ticker = market.get('ticker', 'UNKNOWN')
-                logger.error(f"Signal generation failed for {ticker}: {e}", exc_info=True)
+                logger.error(f"Signal generation failed for {city} {date_key}: {e}", exc_info=True)
                 continue
 
-        logger.info(f"Generated {len(signals)} signals from {len(markets)} markets")
+        logger.info(f"Generated {len(signals)} signals from {len(events)} events ({len(markets)} markets)")
         return signals
+
+    def _group_markets_by_event(self, markets: List[Dict]) -> Dict[Tuple[str, str], List[Dict]]:
+        """
+        Group markets by (city, date_key) to identify events.
+        Each event is a set of bucket markets for the same city and date.
+
+        Returns:
+            Dict mapping (city, date_key) to list of markets for that event
+        """
+        events = {}
+        for market in markets:
+            ticker = market.get('ticker', '')
+            title = market.get('title', '')
+
+            # Only process bucket markets
+            if '-B' not in ticker:
+                continue
+
+            # Parse city and date from ticker or title
+            parsed = parse_market_buckets(market)
+            if not parsed:
+                continue
+
+            buckets, station_id = parsed
+            city = get_city_for_station(station_id)
+            if not city:
+                continue
+
+            # Extract date from ticker (e.g., KXHIGHNY-29MAY26-B88 → 29MAY26)
+            m = re.search(r'-(\d{2}[A-Z]{3}\d{2})-', ticker)
+            if not m:
+                continue
+
+            date_key = m.group(1)
+            event_key = (city, date_key)
+
+            if event_key not in events:
+                events[event_key] = []
+            events[event_key].append(market)
+
+        return events
+
+    def _generate_signal_for_event(
+        self,
+        city: str,
+        date_key: str,
+        event_markets: List[Dict],
+        kalshi_client
+    ) -> Optional[TradeSignal]:
+        """
+        Generate a signal for a single event (city + date).
+        Fetches 3-model consensus once, builds portfolio, then fetches per-bin prices.
+        """
+        logger.debug(f"Analyzing event {city} {date_key} with {len(event_markets)} bucket markets")
+
+        # Step 1: Parse date from event_markets
+        target_date = self._parse_date_from_ticker(event_markets[0].get('ticker', ''))
+        if not target_date:
+            logger.debug(f"Could not parse date for {city} {date_key}")
+            return None
+
+        # Step 2: Check entry window (18-30 hours before resolution)
+        if not self._in_entry_window_for_date(target_date):
+            logger.debug(f"Event {city} {date_key} outside 18–30 hour entry window")
+            return None
+
+        # Step 3: Get city config and fetch 3-model consensus
+        city_config = CITIES_KALSHI.get(city)
+        if not city_config:
+            logger.debug(f"Unknown city {city}")
+            return None
+
+        try:
+            from weather_sources import OpenMeteoSource
+            om = OpenMeteoSource()
+            forecast = om.get_three_model_consensus(city_config['lat'], city_config['lon'], target_date)
+            if forecast is None or not forecast.get('agree'):
+                logger.info(
+                    f"Skipping {city} {date_key}: models disagree (spread={forecast.get('spread', 'N/A')}°C)"
+                )
+                return None
+
+            logger.debug(
+                f"3-model consensus for {city}: ICON={forecast['icon']:.1f}°C, "
+                f"GFS={forecast['gfs']:.1f}°C, ECMWF={forecast['ecmwf']:.1f}°C"
+            )
+        except Exception as e:
+            logger.debug(f"Failed to fetch 3-model consensus for {city} {date_key}: {e}")
+            return None
+
+        # Step 4: Parse available buckets from event markets
+        available_buckets = []
+        market_by_bin = {}  # Map bin_label → market dict
+        for market in event_markets:
+            parsed = parse_market_buckets(market)
+            if not parsed:
+                continue
+            buckets, _ = parsed
+            for bucket in buckets:
+                available_buckets.append(bucket)
+                market_by_bin[bucket.label] = market
+
+        if not available_buckets:
+            logger.debug(f"No buckets found for {city} {date_key}")
+            return None
+
+        # Step 5: Build portfolio using outlier-aware bin selection
+        target_bins = self._build_portfolio_from_consensus(forecast, available_buckets)
+        if not target_bins:
+            logger.debug(f"Could not find viable bins for {city} {date_key}")
+            return None
+
+        logger.debug(f"Selected portfolio for {city} {date_key}: {target_bins}")
+
+        # Step 6: Fetch per-bin prices using actual bucket-market tickers
+        prices_for_bins = []
+        for bin_label in target_bins:
+            if bin_label not in market_by_bin:
+                logger.debug(f"No market found for bin {bin_label} in {city} {date_key}")
+                return None
+
+            bin_market = market_by_bin[bin_label]
+            bin_ticker = bin_market.get('ticker')
+            price = self._get_bin_price(bin_ticker, kalshi_client)
+            if price is None:
+                logger.debug(f"Could not fetch price for {bin_ticker}")
+                return None
+            prices_for_bins.append(price)
+
+        # Step 7: Apply price filters from PDF Step 13
+        sum_price = sum(prices_for_bins)
+        if sum_price > self.max_sum_price:
+            logger.debug(f"Sum of prices {sum_price:.2f} > {self.max_sum_price:.2f} for {city}, skipping")
+            return None
+
+        if any(p < self.min_bin_price for p in prices_for_bins):
+            logger.debug(f"One or more bins < {self.min_bin_price:.2f} for {city}, skipping")
+            return None
+
+        if any(p > self.max_bin_price for p in prices_for_bins):
+            logger.debug(f"One or more bins > {self.max_bin_price:.2f} for {city}, skipping")
+            return None
+
+        logger.info(
+            f"✓ 3-bin signal for {city} {date_key}: bins={target_bins}, "
+            f"prices={[f'{p:.2f}' for p in prices_for_bins]}, sum={sum_price:.2f}"
+        )
+
+        # Step 8: Create signal with equal allocation
+        allocation = [1.0/3.0, 1.0/3.0, 1.0/3.0]
+
+        try:
+            portfolio_balance = kalshi_client.get_portfolio_balance()
+            equity = portfolio_balance.get('balance', 0) / 100
+            notional = equity * 0.03
+        except Exception as e:
+            logger.debug(f"Could not fetch portfolio balance: {e}")
+            notional = 10.0
+
+        # Calculate confidence and edge
+        spread = forecast.get('spread', 3.0)
+        if spread <= 1.0:
+            confidence_score = 95.0
+        elif spread <= 2.0:
+            confidence_score = 85.0
+        elif spread <= 3.0:
+            confidence_score = 75.0
+        else:
+            confidence_score = 60.0
+
+        math_edge = 1.0 - sum_price
+
+        # Use the first market's ticker as reference (for city/date identification)
+        ref_ticker = event_markets[0].get('ticker', '')
+
+        signal = TradeSignal(
+            market_ticker=ref_ticker,
+            station_id=city_config['code'],
+            city_name=city,
+            target_buckets=target_bins,
+            allocation=allocation,
+            total_notional=notional,
+            edge_pct=math_edge * 100,
+            confidence=confidence_score,
+            reasoning=f"3-bin strategy: {target_bins} at {[f'{p:.2f}' for p in prices_for_bins]} (math edge: {math_edge*100:.1f}%)"
+        )
+
+        return signal
+
+    def _parse_date_from_ticker(self, ticker: str) -> Optional[date]:
+        """Extract target date from Kalshi ticker (e.g., KXHIGHNY-29MAY26 → 2026-05-29)."""
+        m = re.search(r'-(\d{2})([A-Z]{3})(\d{2})-', ticker)
+        if not m:
+            return None
+
+        day, mon_str, yr2 = int(m.group(1)), m.group(2), int(m.group(3))
+        month_map = {
+            'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+            'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+        }
+        month = month_map.get(mon_str)
+        if not month:
+            return None
+
+        return date(2000 + yr2, month, day)
+
+    def _in_entry_window_for_date(self, target_date: date) -> bool:
+        """Check if target_date resolves 18–30 hours from now."""
+        from datetime import datetime, timezone, timedelta
+        WIN_MIN_H, WIN_MAX_H = 18.0, 30.0
+        resolve_time = datetime(target_date.year, target_date.month, target_date.day, tzinfo=timezone.utc) + timedelta(hours=24)
+        hours_until = (resolve_time - datetime.now(timezone.utc)).total_seconds() / 3600
+        return WIN_MIN_H <= hours_until <= WIN_MAX_H
+
+    def _get_bin_price(self, ticker: str, kalshi_client) -> Optional[float]:
+        """
+        Fetch the YES best bid price for a specific bucket-market ticker.
+        Returns the price as a float (0.0-1.0), or None if unavailable.
+        """
+        try:
+            orderbook = kalshi_client.get_orderbook(ticker)
+            yes_bids = orderbook.get('yes_dollars', [])
+
+            if not yes_bids:
+                logger.debug(f"No YES bids for {ticker}")
+                return None
+
+            # Return best bid price (highest bid)
+            best_bid = float(yes_bids[-1][0])
+            return best_bid
+
+        except Exception as e:
+            logger.debug(f"Failed to fetch orderbook for {ticker}: {e}")
+            return None
 
     def _generate_signal_for_market(
         self,
@@ -246,7 +479,15 @@ class SignalGenerator:
             notional = 10.0  # Fallback
 
         # Calculate confidence score based on model agreement
-        confidence_score = self._calculate_model_agreement_score(weather_data)
+        spread = forecast.get('spread', 3.0)
+        if spread <= 1.0:
+            confidence_score = 95.0
+        elif spread <= 2.0:
+            confidence_score = 85.0
+        elif spread <= 3.0:
+            confidence_score = 75.0
+        else:
+            confidence_score = 60.0
 
         # Step 9: Calculate edge (all prices should be < 1.0 for math edge)
         math_edge = 1.0 - sum_price

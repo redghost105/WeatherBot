@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 from kalshi_api_client import KalshiAPIClient
 from weather_predictor import HistoricalBiasLearner
+from signal_generator import TradeSignal
 
 logger = logging.getLogger(__name__)
 
@@ -49,22 +50,6 @@ class ExecutionConfig:
     cooldown_seconds: int = 5  # cooldown after anomalies
     retry_count: int = 3  # max retries on transient errors
     journal_path: str = "trade_journal.jsonl"  # audit trail file
-
-
-@dataclass
-class TradeSignal:
-    """Trade signal from WeatherPredictor."""
-    ticker: str  # Market ticker
-    city: str  # City name
-    bucket_label: str  # Temperature bucket
-    action: str  # "buy" or "sell"
-    side: str  # "yes" or "no"
-    suggested_size: int  # Suggested contract count
-    model_probability: float  # Model's predicted probability
-    market_probability: float  # Market's implied probability
-    edge_pct: float  # Edge percentage
-    confidence: float  # Confidence score (0-100)
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
