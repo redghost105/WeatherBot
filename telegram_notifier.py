@@ -9,10 +9,14 @@ import logging
 import requests
 import threading
 import time
+import json
+import os
 from typing import Optional
 from signal_generator import TradeSignal
 
 logger = logging.getLogger(__name__)
+
+TELEGRAM_STATE_FILE = "telegram_update_id.json"
 
 
 class TelegramNotifier:
@@ -32,9 +36,30 @@ class TelegramNotifier:
         self.api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         self.get_updates_url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
         self.trading_engine = trading_engine
-        self.last_update_id = 0
+        self.last_update_id = self._load_last_update_id()
         self.polling_active = False
         self.polling_thread = None
+
+    def _load_last_update_id(self) -> int:
+        """Load persisted last_update_id from disk, or 0 if not found."""
+        try:
+            if os.path.exists(TELEGRAM_STATE_FILE):
+                with open(TELEGRAM_STATE_FILE, 'r') as f:
+                    data = json.load(f)
+                    update_id = data.get('last_update_id', 0)
+                    logger.info(f"Loaded persisted Telegram update ID: {update_id}")
+                    return update_id
+        except Exception as e:
+            logger.warning(f"Failed to load Telegram update ID: {e}")
+        return 0
+
+    def _save_last_update_id(self):
+        """Persist last_update_id to disk."""
+        try:
+            with open(TELEGRAM_STATE_FILE, 'w') as f:
+                json.dump({'last_update_id': self.last_update_id}, f)
+        except Exception as e:
+            logger.warning(f"Failed to save Telegram update ID: {e}")
 
     def send_message(self, message: str) -> bool:
         """Send a message to Telegram chat."""
@@ -153,6 +178,9 @@ Confidence: {signal.confidence:.0f}%
                 for update in updates:
                     self.last_update_id = update.get('update_id', self.last_update_id)
                     self._handle_message(update)
+
+                if updates:
+                    self._save_last_update_id()
 
                 time.sleep(2)
             except Exception as e:
