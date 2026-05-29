@@ -91,13 +91,6 @@ class SignalGenerator:
             return []
 
         signals = []
-        weather_agg = None
-
-        try:
-            weather_agg = WeatherAggregator(cache_ttl_minutes=30)
-        except Exception as e:
-            logger.error(f"Failed to initialize WeatherAggregator: {e}")
-            return []
 
         for market in markets:
             try:
@@ -110,8 +103,7 @@ class SignalGenerator:
 
                 signal = self._generate_signal_for_market(
                     market,
-                    kalshi_client,
-                    weather_agg
+                    kalshi_client
                 )
                 if signal:
                     signals.append(signal)
@@ -126,11 +118,11 @@ class SignalGenerator:
     def _generate_signal_for_market(
         self,
         market: Dict,
-        kalshi_client,
-        weather_agg: WeatherAggregator
+        kalshi_client
     ) -> Optional[TradeSignal]:
         """
-        Generate a signal for a single market using 3-bin strategy.
+        Generate a signal for a single market using Paruchh v3 3-bin strategy.
+        Uses 3-model consensus (ICON+GFS+ECMWF) with outlier-aware bin selection.
 
         Returns TradeSignal if it passes all filters, None otherwise.
         """
@@ -151,42 +143,63 @@ class SignalGenerator:
 
         city_name = get_city_for_station(station_id)
 
-        # Step 2: Fetch weather data
+        # Step 2: Check if within entry window (18-30 hours before resolution)
+        if not self._in_entry_window(ticker):
+            logger.debug(f"Market {ticker} outside 18-30 hour entry window, skipping")
+            return None
+
+        # Step 3: Fetch 3-model consensus (ICON, GFS, ECMWF)
+        from datetime import date
+        import re
+
+        m = re.search(r'-(\d{2})([A-Z]{3})(\d{2})-', ticker)
+        if not m:
+            logger.debug(f"Could not parse date from {ticker}")
+            return None
+
+        day, mon_str, yr2 = int(m.group(1)), m.group(2), int(m.group(3))
+        month_map = {
+            'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+            'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+        }
+        month = month_map.get(mon_str)
+        if not month:
+            logger.debug(f"Could not parse month from {ticker}")
+            return None
+
+        target_date = date(2000 + yr2, month, day)
+
         try:
-            weather_data = weather_agg.get_complete_weather_data(
-                latitude=city_config['lat'],
-                longitude=city_config['lon'],
-                location_name=city_name,
-                forecast_days=1,
-                station_code=station_id
-            )
-            if not weather_data:
-                logger.debug(f"No weather data for {city_name}")
+            from weather_sources import OpenMeteoSource
+            om = OpenMeteoSource()
+            forecast = om.get_three_model_consensus(city_config['lat'], city_config['lon'], target_date)
+            if forecast is None:
+                logger.debug(f"Failed to fetch 3-model consensus for {ticker}")
                 return None
+
+            # Check model agreement
+            if not forecast['agree']:
+                logger.info(
+                    f"Skipping {ticker}: models disagree (spread={forecast['spread']:.1f}°C > 3°C)"
+                )
+                return None
+
+            logger.debug(
+                f"3-model consensus for {ticker}: ICON={forecast['icon']:.1f}°C, "
+                f"GFS={forecast['gfs']:.1f}°C, ECMWF={forecast['ecmwf']:.1f}°C, "
+                f"spread={forecast['spread']:.1f}°C"
+            )
         except Exception as e:
-            logger.debug(f"Failed to fetch weather for {city_name}: {e}")
+            logger.debug(f"Failed to fetch 3-model consensus for {ticker}: {e}")
             return None
 
-        # Log temperature for future backtesting
-        self._log_temperature_data(weather_data, station_id, city_name)
-
-        # Step 3: Get predicted temperature (consensus from all models)
-        predicted_temp_c = weather_data.daily_forecast[0].temperature_max if weather_data.daily_forecast else None
-        if predicted_temp_c is None:
-            logger.debug(f"No predicted temperature for {ticker}")
-            return None
-
-        # Convert Celsius to Fahrenheit (Open-Meteo returns temps in Celsius)
-        predicted_temp_f = (predicted_temp_c * 9/5) + 32
-        logger.debug(f"Predicted temperature for {ticker}: {predicted_temp_c:.1f}°C = {predicted_temp_f:.1f}°F")
-
-        # Step 4: Find center bin and 3 adjacent bins
-        target_buckets = self._find_three_adjacent_buckets(predicted_temp_f, buckets)
+        # Step 4: Build portfolio using outlier-aware bin selection
+        target_buckets = self._build_portfolio_from_consensus(forecast, buckets)
         if not target_buckets:
-            logger.debug(f"Could not find 3 adjacent buckets for {predicted_temp_f:.1f}°F in {ticker}")
+            logger.debug(f"Could not find viable bins for {ticker}")
             return None
 
-        logger.debug(f"Selected 3-bin strategy for {ticker}: {target_buckets}")
+        logger.debug(f"Selected portfolio for {ticker}: {target_buckets}")
 
         # Step 5: Get market prices for the 3 bins
         market_prices = self._get_market_prices(ticker, kalshi_client, buckets)
@@ -252,49 +265,100 @@ class SignalGenerator:
 
         return signal
 
-    def _find_three_adjacent_buckets(
+    def _build_portfolio_from_consensus(
         self,
-        predicted_temp: float,
+        forecast: Dict,
         available_buckets: List[Bucket]
-    ) -> List[str]:
+    ) -> Optional[List[str]]:
         """
-        Find the center bin containing predicted temperature,
-        then return the 3 adjacent bins (center - 1, center, center + 1).
+        Paruchh v3 portfolio builder: outlier-aware bin selection.
 
-        From PDF: "Center of consensus, plus one on each side"
+        Args:
+            forecast: {'icon': C, 'gfs': C, 'ecmwf': C, 'spread': x, 'agree': bool}
+            available_buckets: List of Bucket objects
+
+        Returns:
+            List of 2–3 bucket labels, or None to skip this market.
         """
-        # Find which bucket contains the predicted temperature
-        center_bucket = None
-        center_index = None
+        icon, gfs, ecmwf = forecast['icon'], forecast['gfs'], forecast['ecmwf']
 
-        for i, bucket in enumerate(available_buckets):
-            if bucket.contains(predicted_temp):
-                center_bucket = bucket
-                center_index = i
+        # Find closest pair of models
+        distances = {
+            ('icon', 'gfs'): abs(icon - gfs),
+            ('icon', 'ecmwf'): abs(icon - ecmwf),
+            ('gfs', 'ecmwf'): abs(gfs - ecmwf),
+        }
+        closest = min(distances, key=distances.get)
+
+        if distances[closest] <= 1.0:
+            # Tight pair: average pair, treat third as outlier
+            pair_vals = [forecast[m] for m in closest]
+            center = sum(pair_vals) / 2
+            outlier_key = next(m for m in ('icon', 'gfs', 'ecmwf') if m not in closest)
+            outlier = forecast[outlier_key]
+        else:
+            # All three spread out: average all, no outlier
+            center = (icon + gfs + ecmwf) / 3
+            outlier = None
+
+        # Convert center from Celsius to Fahrenheit
+        center_f = (center * 9/5) + 32
+
+        # Find center bin (with gap fallback)
+        center_bin = None
+        for b in available_buckets:
+            if b.contains(center_f):
+                center_bin = b
                 break
+        if center_bin is None:
+            # Gap fallback: nearest bin midpoint
+            center_bin = min(available_buckets, key=lambda b: abs(b.midpoint() - center_f))
 
-        if center_bucket is None:
-            # Temperature doesn't fall into any bucket - try fallback to nearest
-            distances = [(i, abs(bucket.midpoint() - predicted_temp)) for i, bucket in enumerate(available_buckets)]
-            center_index = min(distances, key=lambda x: x[1])[0]
-            center_bucket = available_buckets[center_index]
-            logger.debug(f"Temperature {predicted_temp:.1f}°F not in any bucket, using nearest: {center_bucket.label}")
+        idx = available_buckets.index(center_bin)
+        above_1 = available_buckets[idx + 1] if idx + 1 < len(available_buckets) else None
+        above_2 = available_buckets[idx + 2] if idx + 2 < len(available_buckets) else None
+        below_1 = available_buckets[idx - 1] if idx > 0 else None
 
-        # Get 3 adjacent bins: center - 1, center, center + 1
-        bins_to_use = []
+        # CASE A: outlier above center → tilt upward
+        if outlier is not None and (outlier * 9/5 + 32) > center_f:
+            plan = [center_bin, above_1, above_2]
+        else:
+            # CASE B/C: outlier below center or no outlier → center + above + below
+            plan = [center_bin, above_1, below_1]
 
-        # Add below bucket if it exists
-        if center_index > 0:
-            bins_to_use.append(available_buckets[center_index - 1].label)
+        plan = [b for b in plan if b is not None]
+        if len(plan) < 2:
+            return None
 
-        # Add center bucket
-        bins_to_use.append(center_bucket.label)
+        return [b.label for b in plan]
 
-        # Add above bucket if it exists
-        if center_index < len(available_buckets) - 1:
-            bins_to_use.append(available_buckets[center_index + 1].label)
+    def _in_entry_window(self, market_ticker: str) -> bool:
+        """
+        Return True if market resolves 18–30 hours from now.
+        Markets resolve at end-of-day (midnight UTC) of their target date.
+        """
+        import re
+        from datetime import datetime, timezone, timedelta, date as date_class
 
-        return bins_to_use
+        WIN_MIN_H, WIN_MAX_H = 18.0, 30.0
+        m = re.search(r'-(\d{2})([A-Z]{3})(\d{2})-', market_ticker)
+        if not m:
+            return False
+
+        day, mon_str, yr2 = int(m.group(1)), m.group(2), int(m.group(3))
+        month_map = {
+            'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+            'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12,
+        }
+        month = month_map.get(mon_str)
+        if not month:
+            return False
+
+        year = 2000 + yr2
+        target_date = date_class(year, month, day)
+        resolve_time = datetime(year, month, day, tzinfo=timezone.utc) + timedelta(hours=24)
+        hours_until = (resolve_time - datetime.now(timezone.utc)).total_seconds() / 3600
+        return WIN_MIN_H <= hours_until <= WIN_MAX_H
 
     def _get_market_prices(
         self,

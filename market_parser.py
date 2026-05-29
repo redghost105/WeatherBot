@@ -15,13 +15,15 @@ from weather_predictor import Bucket, parse_bucket_string
 
 logger = logging.getLogger(__name__)
 
-# City configuration with exact station codes
+# City configuration with resolution-station coordinates
+# CRITICAL: Coordinates must point to the Kalshi market's resolution station, not city center
+# Verify each station against Kalshi market rules before trading live
 CITIES_KALSHI = {
-    'NYC': {'lat': 40.7128, 'lon': -74.0060, 'code': 'KNYC'},
-    'Chicago': {'lat': 41.8781, 'lon': -87.6298, 'code': 'KMDW'},
-    'Dallas': {'lat': 32.7767, 'lon': -96.7970, 'code': 'KDFW'},
-    'Denver': {'lat': 39.7392, 'lon': -104.9903, 'code': 'KDEN'},
-    'LA': {'lat': 34.0522, 'lon': -118.2437, 'code': 'KLAX'},
+    'NYC': {'lat': 40.7772, 'lon': -73.8726, 'code': 'KLGA'},  # LaGuardia Airport
+    'Chicago': {'lat': 41.9742, 'lon': -87.9073, 'code': 'KORD'},  # O'Hare Airport
+    'Dallas': {'lat': 32.8471, 'lon': -96.8518, 'code': 'KDAL'},  # Love Field Airport
+    'Denver': {'lat': 39.7392, 'lon': -104.9903, 'code': 'KDEN'},  # Denver Int'l (unchanged)
+    'LA': {'lat': 34.0522, 'lon': -118.2437, 'code': 'KLAX'},  # LAX (unchanged)
 }
 
 

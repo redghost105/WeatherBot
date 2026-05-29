@@ -5,7 +5,7 @@ Each source is wrapped in a consistent interface that returns normalized Locatio
 import requests
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Optional, Dict, List, Any
 from urllib.parse import urlencode
 
@@ -299,6 +299,50 @@ class OpenMeteoSource(BaseWeatherSource):
             logger.error(f"Open-Meteo ensemble forecast error: {e}")
             return []
 
+    def get_three_model_consensus(self, lat: float, lon: float, target_date: 'date') -> Optional[Dict]:
+        """
+        Fetch ICON, GFS, ECMWF daily-max temps for target_date with bias correction.
+        Paruchh v3 consensus algorithm: fetch all three models, compare agreement.
+
+        Returns: {'icon': float, 'gfs': float, 'ecmwf': float, 'spread': float, 'agree': bool}
+        or None on fetch failure.
+        """
+        try:
+            params = {
+                'latitude': lat,
+                'longitude': lon,
+                'models': 'icon_seamless,gfs_seamless,ecmwf_ifs025',
+                'hourly': 'temperature_2m',
+                'bias_correction': 'true',
+                'temperature_unit': 'celsius',
+                'start_date': target_date.isoformat(),
+                'end_date': target_date.isoformat(),
+            }
+            r = self.session.get(f"{self.BASE_URL}/forecast", params=params, timeout=self.timeout)
+            r.raise_for_status()
+            data = r.json()
+
+            if 'hourly' not in data:
+                return None
+
+            hourly = data['hourly']
+            icon_max = max(hourly.get('temperature_2m_icon_seamless', [0]))
+            gfs_max = max(hourly.get('temperature_2m_gfs_seamless', [0]))
+            ecmwf_max = max(hourly.get('temperature_2m_ecmwf_ifs025', [0]))
+
+            spread = max(icon_max, gfs_max, ecmwf_max) - min(icon_max, gfs_max, ecmwf_max)
+
+            return {
+                'icon': icon_max,
+                'gfs': gfs_max,
+                'ecmwf': ecmwf_max,
+                'spread': spread,
+                'agree': spread <= 3.0,
+            }
+        except Exception as e:
+            logger.error(f"Three-model fetch error for ({lat},{lon}): {e}")
+            return None
+
 
 class NOAASource(BaseWeatherSource):
     """NOAA/National Weather Service API - Kalshi resolution"""
@@ -557,6 +601,8 @@ class METARSource(BaseWeatherSource):
             observations = []
 
             for metar in data.get('results', []):
+                if not isinstance(metar, dict):
+                    continue
                 obs = HistoricalObservation(
                     timestamp=datetime.fromisoformat(metar.get('obsTime', datetime.utcnow().isoformat())),
                     temperature=self._safe_metar_value(metar.get('temp', {})),

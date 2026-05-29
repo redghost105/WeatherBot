@@ -8,3 +8,4 @@ trade_journal.jsonl
 risk_manager_state.json
 .env
 .kalshi/
+.mcp.json
