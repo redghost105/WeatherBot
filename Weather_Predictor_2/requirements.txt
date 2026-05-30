@@ -1,0 +1,8 @@
+requests
+web3
+websockets
+scipy
+numpy
+schedule
+python-dotenv
+py-clob-client @ git+https://github.com/Polymarket/py-clob-client.git
